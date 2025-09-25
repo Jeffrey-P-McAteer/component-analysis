@@ -1,3 +1,83 @@
-fn main() {
-    println!("Hello, world!");
+mod cli;
+mod database;
+mod parser;
+mod analysis;
+mod types;
+#[cfg(feature = "gui")]
+mod visualization;
+
+use anyhow::Result;
+use clap::Parser;
+use cli::{Cli, Commands};
+use log::{info, error};
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Initialize logging
+    if cli.verbose {
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Debug)
+            .init();
+    } else {
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Info)
+            .init();
+    }
+
+    info!("Starting component analyzer");
+    info!("Using database: {}", cli.analysis_data.display());
+
+    match &cli.command {
+        Commands::Analyze {
+            input,
+            focus_syscalls,
+            focus_network,
+            deep,
+        } => {
+            info!("Analyzing binary: {}", input.display());
+            cli::analyze::run(&cli.analysis_data, input, *focus_syscalls, *focus_network, *deep)
+        }
+
+        Commands::Visualize {
+            component_type,
+            filter,
+        } => {
+            #[cfg(feature = "gui")]
+            {
+                info!("Starting visualization");
+                cli::visualize::run(&cli.analysis_data, component_type.as_deref(), filter.as_deref())
+            }
+            #[cfg(not(feature = "gui"))]
+            {
+                error!("GUI support not compiled in. Rebuild with --features gui");
+                std::process::exit(1);
+            }
+        }
+
+        Commands::Db {
+            export,
+            import,
+            stats,
+            init,
+        } => {
+            if *init {
+                info!("Initializing database schema");
+                cli::database::init(&cli.analysis_data)?;
+            }
+            if let Some(export_path) = export {
+                info!("Exporting data to: {}", export_path.display());
+                cli::database::export(&cli.analysis_data, export_path)?;
+            }
+            if let Some(import_path) = import {
+                info!("Importing data from: {}", import_path.display());
+                cli::database::import(&cli.analysis_data, import_path)?;
+            }
+            if *stats {
+                info!("Displaying database statistics");
+                cli::database::stats(&cli.analysis_data)?;
+            }
+            Ok(())
+        }
+    }
 }
