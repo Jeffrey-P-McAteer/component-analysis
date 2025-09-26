@@ -1,7 +1,9 @@
 pub mod disassembly;
-pub mod call_graph;
+pub mod call_graph; 
 pub mod syscalls;
 pub mod capabilities;
 
-// Analysis module stubs for future implementation
-// These will be expanded in Phase 2 of the implementation
+pub use disassembly::*;
+pub use call_graph::*;
+pub use syscalls::*;
+pub use capabilities::*;

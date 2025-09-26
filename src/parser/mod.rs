@@ -47,6 +47,15 @@ impl BinaryParser {
         }
     }
 
+    pub fn get_binary_base(&self) -> Result<u64> {
+        let object = Object::parse(&self.data)?;
+        match object {
+            Object::Elf(elf) => Ok(elf.entry),
+            Object::PE(pe) => Ok(pe.image_base as u64),
+            _ => Err(anyhow!("Unsupported binary format for base address")),
+        }
+    }
+
     pub fn extract_functions(&self) -> Result<Vec<Function>> {
         let object = Object::parse(&self.data)?;
         match object {

@@ -155,12 +155,13 @@ pub struct Syscall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capability {
     pub name: String,
+    pub category: String,
     pub description: String,
     pub risk_level: RiskLevel,
     pub evidence: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum RiskLevel {
     Low,
     Medium,
