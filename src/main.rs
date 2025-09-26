@@ -9,6 +9,8 @@ mod visualization;
 mod investigation;
 mod performance;
 mod dynamic;
+mod network;
+mod ml;
 
 use anyhow::Result;
 use clap::Parser;
@@ -101,6 +103,50 @@ fn main() -> Result<()> {
                 *list_sandboxes,
                 status.as_deref(),
                 report.as_deref(),
+            )
+        }
+
+        Commands::Network {
+            segment,
+            attack_paths,
+            threats,
+            export,
+            security_report,
+            stats,
+        } => {
+            info!("Network topology analysis command");
+            cli::network_analysis::run(
+                &cli.analysis_data,
+                segment.as_deref(),
+                *attack_paths,
+                *threats,
+                export.as_deref(),
+                *security_report,
+                *stats,
+            )
+        }
+
+        Commands::Ml {
+            model,
+            component,
+            anomaly_detection,
+            threat_prediction,
+            list_models,
+            report,
+            export,
+            confidence_threshold,
+        } => {
+            info!("Machine learning analysis command");
+            cli::ml_analysis::run(
+                &cli.analysis_data,
+                model,
+                component.as_deref(),
+                *anomaly_detection,
+                *threat_prediction,
+                *list_models,
+                *report,
+                export.as_deref(),
+                *confidence_threshold,
             )
         }
     }

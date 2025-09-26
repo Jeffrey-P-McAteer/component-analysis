@@ -2,6 +2,8 @@ pub mod analyze;
 pub mod database;
 pub mod visualize;
 pub mod dynamic_analysis;
+pub mod network_analysis;
+pub mod ml_analysis;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -99,5 +101,67 @@ pub enum Commands {
         #[arg(long)]
         #[arg(help = "Generate report for completed session")]
         report: Option<String>,
+    },
+
+    #[command(about = "Network topology analysis and visualization")]
+    Network {
+        #[arg(long)]
+        #[arg(help = "Focus on specific network segment (CIDR notation)")]
+        segment: Option<String>,
+
+        #[arg(long)]
+        #[arg(help = "Analyze attack paths")]
+        attack_paths: bool,
+
+        #[arg(long)]
+        #[arg(help = "Detect threat indicators")]
+        threats: bool,
+
+        #[arg(long)]
+        #[arg(help = "Export network topology to file")]
+        export: Option<PathBuf>,
+
+        #[arg(long)]
+        #[arg(help = "Generate comprehensive network security report")]
+        security_report: bool,
+
+        #[arg(long)]
+        #[arg(help = "Show network statistics")]
+        stats: bool,
+    },
+
+    #[command(about = "Machine learning analysis and classification")]
+    Ml {
+        #[arg(long, default_value = "malware_classifier")]
+        #[arg(help = "Model to use for classification")]
+        model: String,
+
+        #[arg(long)]
+        #[arg(help = "Component ID or pattern to classify")]
+        component: Option<String>,
+
+        #[arg(long)]
+        #[arg(help = "Perform anomaly detection")]
+        anomaly_detection: bool,
+
+        #[arg(long)]
+        #[arg(help = "Predict potential threats")]
+        threat_prediction: bool,
+
+        #[arg(long)]
+        #[arg(help = "List available models")]
+        list_models: bool,
+
+        #[arg(long)]
+        #[arg(help = "Generate comprehensive ML analysis report")]
+        report: bool,
+
+        #[arg(long)]
+        #[arg(help = "Export ML results to file")]
+        export: Option<PathBuf>,
+
+        #[arg(long, default_value = "0.5")]
+        #[arg(help = "Minimum confidence threshold for predictions")]
+        confidence_threshold: f64,
     },
 }
