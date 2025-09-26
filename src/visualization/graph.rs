@@ -1,2 +1,437 @@
-// Placeholder for graph visualization
-// Will be expanded in Phase 3
+#[cfg(feature = "gui")]
+use crate::types::{Component, Relationship, ComponentType};
+#[cfg(feature = "gui")]
+use egui::{Context, Ui, Pos2, Vec2, Rect, Color32, Stroke, Rounding};
+#[cfg(feature = "gui")]
+use std::collections::{HashMap, HashSet};
+
+#[cfg(feature = "gui")]
+#[derive(Debug, Clone)]
+pub struct GraphNode {
+    pub id: String,
+    pub component: Component,
+    pub position: Pos2,
+    pub size: Vec2,
+    pub selected: bool,
+    pub hovered: bool,
+}
+
+#[cfg(feature = "gui")]
+#[derive(Debug, Clone)]
+pub struct GraphEdge {
+    pub id: String,
+    pub relationship: Relationship,
+    pub from_pos: Pos2,
+    pub to_pos: Pos2,
+    pub selected: bool,
+}
+
+#[cfg(feature = "gui")]
+pub struct ComponentGraph {
+    pub nodes: HashMap<String, GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub layout: GraphLayout,
+    pub viewport: Rect,
+    pub zoom: f32,
+    pub pan_offset: Vec2,
+    pub selection: HashSet<String>,
+}
+
+#[cfg(feature = "gui")]
+#[derive(Debug, Clone)]
+pub enum GraphLayout {
+    Force,
+    Hierarchical,
+    Circular,
+    Grid,
+}
+
+#[cfg(feature = "gui")]
+impl ComponentGraph {
+    pub fn new() -> Self {
+        Self {
+            nodes: HashMap::new(),
+            edges: Vec::new(),
+            layout: GraphLayout::Force,
+            viewport: Rect::NOTHING,
+            zoom: 1.0,
+            pan_offset: Vec2::ZERO,
+            selection: HashSet::new(),
+        }
+    }
+
+    pub fn add_component(&mut self, component: Component) {
+        let node = GraphNode {
+            id: component.id.clone(),
+            position: Pos2::new(0.0, 0.0), // Will be set by layout
+            size: Self::calculate_node_size(&component),
+            selected: false,
+            hovered: false,
+            component,
+        };
+        self.nodes.insert(node.id.clone(), node);
+    }
+
+    pub fn add_relationship(&mut self, relationship: Relationship) {
+        if let (Some(from_node), Some(to_node)) = (
+            self.nodes.get(&relationship.source_id),
+            self.nodes.get(&relationship.target_id)
+        ) {
+            let edge = GraphEdge {
+                id: format!("{}_{}", relationship.source_id, relationship.target_id),
+                from_pos: from_node.position,
+                to_pos: to_node.position,
+                selected: false,
+                relationship,
+            };
+            self.edges.push(edge);
+        }
+    }
+
+    pub fn set_layout(&mut self, layout: GraphLayout) {
+        self.layout = layout;
+        self.apply_layout();
+    }
+
+    pub fn apply_layout(&mut self) {
+        match self.layout {
+            GraphLayout::Force => self.apply_force_layout(),
+            GraphLayout::Hierarchical => self.apply_hierarchical_layout(),
+            GraphLayout::Circular => self.apply_circular_layout(),
+            GraphLayout::Grid => self.apply_grid_layout(),
+        }
+        self.update_edge_positions();
+    }
+
+    fn apply_force_layout(&mut self) {
+        let node_count = self.nodes.len();
+        if node_count == 0 {
+            return;
+        }
+
+        let center = Pos2::new(400.0, 300.0);
+        let radius = 200.0;
+
+        // Simple circular arrangement as a starting point for force layout
+        let mut angle: f32 = 0.0;
+        let angle_step = 2.0 * std::f32::consts::PI / node_count as f32;
+
+        for node in self.nodes.values_mut() {
+            node.position = center + Vec2::new(
+                radius * angle.cos(),
+                radius * angle.sin(),
+            );
+            angle += angle_step;
+        }
+
+        // Apply force-directed algorithm (simplified)
+        for _ in 0..50 {
+            self.apply_forces();
+        }
+    }
+
+    fn apply_forces(&mut self) {
+        let mut forces: HashMap<String, Vec2> = HashMap::new();
+        
+        // Repulsion forces between nodes
+        let nodes: Vec<_> = self.nodes.values().collect();
+        for (i, node1) in nodes.iter().enumerate() {
+            let mut force = Vec2::ZERO;
+            
+            for (j, node2) in nodes.iter().enumerate() {
+                if i != j {
+                    let diff = node1.position - node2.position;
+                    let distance = diff.length().max(1.0);
+                    let repulsion = 1000.0 / (distance * distance);
+                    force += diff.normalized() * repulsion;
+                }
+            }
+            forces.insert(node1.id.clone(), force);
+        }
+
+        // Attraction forces along edges
+        for edge in &self.edges {
+            if let (Some(from_node), Some(to_node)) = (
+                self.nodes.get(&edge.relationship.source_id),
+                self.nodes.get(&edge.relationship.target_id)
+            ) {
+                let diff = to_node.position - from_node.position;
+                let distance = diff.length().max(1.0);
+                let attraction = distance * 0.01;
+                let attraction_force = diff.normalized() * attraction;
+
+                forces.entry(from_node.id.clone()).and_modify(|f| *f += attraction_force).or_insert(attraction_force);
+                forces.entry(to_node.id.clone()).and_modify(|f| *f -= attraction_force).or_insert(-attraction_force);
+            }
+        }
+
+        // Apply forces with damping
+        for (id, force) in forces {
+            if let Some(node) = self.nodes.get_mut(&id) {
+                node.position += force * 0.1; // Damping factor
+            }
+        }
+    }
+
+    fn apply_hierarchical_layout(&mut self) {
+        let mut levels: HashMap<String, usize> = HashMap::new();
+        let mut level_nodes: Vec<Vec<String>> = Vec::new();
+
+        // Find root nodes (components with no incoming edges)
+        let mut incoming_counts: HashMap<String, usize> = HashMap::new();
+        for node_id in self.nodes.keys() {
+            incoming_counts.insert(node_id.clone(), 0);
+        }
+        for edge in &self.edges {
+            *incoming_counts.entry(edge.relationship.target_id.clone()).or_insert(0) += 1;
+        }
+
+        // BFS to assign levels
+        let mut current_level = 0;
+        let mut queue: Vec<_> = incoming_counts.iter()
+            .filter(|(_, &count)| count == 0)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        while !queue.is_empty() {
+            if level_nodes.len() <= current_level {
+                level_nodes.push(Vec::new());
+            }
+            
+            let mut next_queue = Vec::new();
+            
+            for node_id in queue {
+                levels.insert(node_id.clone(), current_level);
+                level_nodes[current_level].push(node_id.clone());
+
+                // Add children to next level
+                for edge in &self.edges {
+                    if edge.relationship.source_id == node_id {
+                        let target = &edge.relationship.target_id;
+                        if !levels.contains_key(target) {
+                            next_queue.push(target.clone());
+                        }
+                    }
+                }
+            }
+
+            queue = next_queue;
+            current_level += 1;
+        }
+
+        // Position nodes
+        let level_height = 100.0;
+        let node_spacing = 150.0;
+
+        for (level_idx, level_node_ids) in level_nodes.iter().enumerate() {
+            let y = level_idx as f32 * level_height + 50.0;
+            let total_width = (level_node_ids.len().saturating_sub(1)) as f32 * node_spacing;
+            let start_x = 400.0 - total_width / 2.0;
+
+            for (node_idx, node_id) in level_node_ids.iter().enumerate() {
+                if let Some(node) = self.nodes.get_mut(node_id) {
+                    node.position = Pos2::new(start_x + node_idx as f32 * node_spacing, y);
+                }
+            }
+        }
+    }
+
+    fn apply_circular_layout(&mut self) {
+        let node_count = self.nodes.len();
+        if node_count == 0 {
+            return;
+        }
+
+        let center = Pos2::new(400.0, 300.0);
+        let radius = 200.0;
+        let mut angle: f32 = 0.0;
+        let angle_step = 2.0 * std::f32::consts::PI / node_count as f32;
+
+        for node in self.nodes.values_mut() {
+            node.position = center + Vec2::new(
+                radius * angle.cos(),
+                radius * angle.sin(),
+            );
+            angle += angle_step;
+        }
+    }
+
+    fn apply_grid_layout(&mut self) {
+        let node_count = self.nodes.len();
+        if node_count == 0 {
+            return;
+        }
+
+        let cols = (node_count as f32).sqrt().ceil() as usize;
+        let cell_width = 150.0;
+        let cell_height = 100.0;
+
+        for (idx, node) in self.nodes.values_mut().enumerate() {
+            let row = idx / cols;
+            let col = idx % cols;
+            node.position = Pos2::new(
+                50.0 + col as f32 * cell_width,
+                50.0 + row as f32 * cell_height,
+            );
+        }
+    }
+
+    fn update_edge_positions(&mut self) {
+        for edge in &mut self.edges {
+            if let (Some(from_node), Some(to_node)) = (
+                self.nodes.get(&edge.relationship.source_id),
+                self.nodes.get(&edge.relationship.target_id)
+            ) {
+                edge.from_pos = from_node.position + from_node.size * 0.5;
+                edge.to_pos = to_node.position + to_node.size * 0.5;
+            }
+        }
+    }
+
+    fn calculate_node_size(component: &Component) -> Vec2 {
+        let base_size = match component.component_type {
+            ComponentType::Binary => Vec2::new(80.0, 60.0),
+            ComponentType::Function => Vec2::new(60.0, 40.0),
+            ComponentType::Instruction => Vec2::new(40.0, 30.0),
+            ComponentType::Process => Vec2::new(100.0, 70.0),
+            ComponentType::Host => Vec2::new(120.0, 80.0),
+            ComponentType::Network => Vec2::new(90.0, 50.0),
+        };
+
+        // Adjust size based on name length
+        let text_width = component.name.len() as f32 * 8.0;
+        Vec2::new(base_size.x.max(text_width + 20.0), base_size.y)
+    }
+
+    pub fn render(&mut self, ui: &mut Ui) {
+        let available_rect = ui.available_rect_before_wrap();
+        self.viewport = available_rect;
+
+        let response = ui.allocate_response(available_rect.size(), egui::Sense::click_and_drag());
+
+        // Handle pan and zoom
+        if response.dragged() {
+            self.pan_offset += response.drag_delta() / self.zoom;
+        }
+
+        // Collect node data and drawing info
+        let node_data: Vec<_> = self.nodes.values().map(|node| {
+            let pos = self.transform_position(node.position);
+            let size = node.size * self.zoom;
+            let rect = Rect::from_min_size(pos, size);
+            
+            (
+                node.id.clone(),
+                rect,
+                node.selected,
+                node.hovered,
+                node.component.component_type.clone(),
+                node.component.name.clone(),
+            )
+        }).collect();
+
+        let edge_data: Vec<_> = self.edges.iter().map(|edge| {
+            let from = self.transform_position(edge.from_pos);
+            let to = self.transform_position(edge.to_pos);
+            let color = if edge.selected {
+                Color32::from_rgb(255, 100, 100)
+            } else {
+                Color32::from_rgb(100, 100, 100)
+            };
+            (from, to, color)
+        }).collect();
+
+        // Draw everything
+        let painter = ui.painter();
+        
+        // Draw edges
+        for (from, to, color) in edge_data {
+            painter.arrow(from, to - from, Stroke::new(2.0, color));
+        }
+        
+        // Draw nodes first
+        for (_, rect, selected, hovered, component_type, name) in &node_data {
+            let color = self.get_node_color(component_type);
+            let stroke_color = if *selected {
+                Color32::from_rgb(255, 200, 0)
+            } else if *hovered {
+                Color32::from_rgb(200, 200, 200)
+            } else {
+                Color32::from_rgb(100, 100, 100)
+            };
+
+            // Draw node
+            painter.rect(*rect, Rounding::same(5.0), color, Stroke::new(2.0, stroke_color));
+
+            // Draw text
+            let text_pos = rect.center();
+            painter.text(
+                text_pos,
+                egui::Align2::CENTER_CENTER,
+                name,
+                egui::FontId::default(),
+                Color32::BLACK,
+            );
+        }
+
+        // Now handle interactions separately
+        let mut node_interactions = Vec::new();
+        for (node_id, rect, _, _, _, _) in node_data {
+            let node_response = ui.allocate_rect(rect, egui::Sense::click());
+            node_interactions.push((node_id, node_response.hovered(), node_response.clicked()));
+        }
+        
+        // Apply interactions
+        for (node_id, is_hovered, was_clicked) in node_interactions {
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                node.hovered = is_hovered;
+                
+                if was_clicked {
+                    if self.selection.contains(&node.id) {
+                        self.selection.remove(&node.id);
+                        node.selected = false;
+                    } else {
+                        self.selection.insert(node.id.clone());
+                        node.selected = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn transform_position(&self, pos: Pos2) -> Pos2 {
+        (pos + self.pan_offset) * self.zoom + self.viewport.min.to_vec2()
+    }
+
+    fn get_node_color(&self, component_type: &ComponentType) -> Color32 {
+        match component_type {
+            ComponentType::Binary => Color32::from_rgb(100, 150, 255),
+            ComponentType::Function => Color32::from_rgb(150, 255, 150),
+            ComponentType::Instruction => Color32::from_rgb(255, 255, 150),
+            ComponentType::Process => Color32::from_rgb(255, 150, 150),
+            ComponentType::Host => Color32::from_rgb(200, 150, 255),
+            ComponentType::Network => Color32::from_rgb(150, 255, 255),
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        for node in self.nodes.values_mut() {
+            node.selected = false;
+        }
+        self.selection.clear();
+    }
+
+    pub fn get_selected_components(&self) -> Vec<&Component> {
+        self.selection.iter()
+            .filter_map(|id| self.nodes.get(id))
+            .map(|node| &node.component)
+            .collect()
+    }
+}
+
+#[cfg(feature = "gui")]
+impl Default for ComponentGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}

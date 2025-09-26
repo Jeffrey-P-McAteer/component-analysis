@@ -9,3 +9,9 @@ pub mod layouts;
 
 #[cfg(feature = "gui")]
 pub use app::*;
+#[cfg(feature = "gui")]
+pub use graph::*;
+#[cfg(feature = "gui")]
+pub use components::*;
+#[cfg(feature = "gui")]
+pub use layouts::*;
