@@ -931,7 +931,7 @@ impl MachineLearningClassifier {
         let port_number = features.get("port_number").unwrap_or(&0.0);
         let protocol_type = features.get("protocol_type").unwrap_or(&0.0);
         
-        let mut risk = 0.0;
+        let mut risk: f64 = 0.0;
         
         // High number of connections
         if *connection_count > 50.0 {

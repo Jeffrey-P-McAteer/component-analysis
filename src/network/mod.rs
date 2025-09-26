@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 pub struct NetworkTopologyAnalyzer {
     pub network_graph: NetworkGraph,
     pub discovered_hosts: HashMap<String, NetworkHost>,
-    pub network_segments: Vec<NetworkSegment>,
+    pub network_segments: Vec<NetworkSubnet>,
     pub communication_patterns: Vec<CommunicationPattern>,
     pub attack_paths: Vec<AttackPath>,
     pub threat_indicators: Vec<NetworkThreatIndicator>,

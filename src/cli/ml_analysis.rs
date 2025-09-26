@@ -204,7 +204,7 @@ fn display_classification_results(results: &[(crate::types::Component, Classific
         println!("{}", "-".repeat(class_name.len() + 10));
         
         // Sort by confidence descending
-        let mut sorted_results = class_results;
+        let mut sorted_results = class_results.clone();
         sorted_results.sort_by(|a, b| b.1.confidence.partial_cmp(&a.1.confidence).unwrap());
         
         for (component, result) in sorted_results.iter().take(10) { // Show top 10

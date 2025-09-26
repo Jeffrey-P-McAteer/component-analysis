@@ -1,5 +1,5 @@
 #[cfg(feature = "gui")]
-use crate::types::{Investigation, Component};
+use crate::types::{Investigation, Component, InvestigationType};
 #[cfg(feature = "gui")]
 use crate::database::{open_database};
 #[cfg(feature = "gui")]
@@ -26,6 +26,7 @@ pub struct NewInvestigationForm {
     pub investigator: String,
     pub priority: InvestigationPriority,
     pub component_id: Option<String>,
+    pub investigation_type: InvestigationType,
 }
 
 #[cfg(feature = "gui")]
@@ -106,17 +107,17 @@ impl InvestigationManager {
         self.investigations.clear();
         
         // Add sample investigations for testing
-        self.investigations.push(Investigation {
-            id: "inv_001".to_string(),
-            title: "Suspicious Network Activity".to_string(),
-            description: "Binary shows unusual network connection patterns".to_string(),
-            component_id: "comp_001".to_string(),
-            investigator: Some("Security Analyst".to_string()),
-            status: "Open".to_string(),
-            findings: serde_json::json!({}),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        });
+        let sample_investigation = Investigation::new(
+            "comp_001".to_string(),
+            InvestigationType::Manual,
+            serde_json::json!({
+                "title": "Suspicious Network Activity",
+                "description": "Binary shows unusual network connection patterns",
+                "status": "Open"
+            })
+        ).with_investigator("Security Analyst".to_string());
+        
+        self.investigations.push(sample_investigation);
         
         Ok(())
     }
@@ -198,14 +199,19 @@ impl InvestigationManager {
         ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
             for investigation in &self.investigations {
                 let selected = self.selected_investigation.as_ref() == Some(&investigation.id);
-                let response = ui.selectable_label(selected, &investigation.title);
+                let title = investigation.findings.get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&investigation.id);
+                let response = ui.selectable_label(selected, title);
                 
                 if response.clicked() {
                     self.selected_investigation = Some(investigation.id.clone());
                 }
                 
                 ui.label(format!("Status: {} | Investigator: {}", 
-                    investigation.status, 
+                    investigation.findings.get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown"), 
                     investigation.investigator.as_deref().unwrap_or("Unknown")));
                 ui.separator();
             }
@@ -213,9 +219,9 @@ impl InvestigationManager {
 
         // Investigation details
         if let Some(selected_id) = &self.selected_investigation {
-            if let Some(investigation) = self.investigations.iter().find(|i| &i.id == selected_id) {
+            if let Some(investigation) = self.investigations.iter().find(|i| &i.id == selected_id).cloned() {
                 ui.separator();
-                self.render_investigation_details(ui, investigation);
+                self.render_investigation_details(ui, &investigation);
             }
         }
 
@@ -233,9 +239,7 @@ impl InvestigationManager {
             .default_open(true)
             .show(ui, |ui| {
                 ui.label(format!("ID: {}", investigation.id));
-                ui.label(format!("Title: {}", investigation.title));
-                ui.label(format!("Description: {}", investigation.description));
-                ui.label(format!("Status: {}", investigation.status));
+                ui.label(format!("Type: {:?}", investigation.investigation_type));
                 ui.label(format!("Component: {}", investigation.component_id));
                 
                 if let Some(investigator) = &investigation.investigator {
@@ -243,7 +247,6 @@ impl InvestigationManager {
                 }
                 
                 ui.label(format!("Created: {}", investigation.created_at.format("%Y-%m-%d %H:%M:%S UTC")));
-                ui.label(format!("Updated: {}", investigation.updated_at.format("%Y-%m-%d %H:%M:%S UTC")));
 
                 ui.separator();
                 ui.label("Findings:");
@@ -342,21 +345,21 @@ impl InvestigationManager {
     }
 
     fn create_investigation(&mut self) {
-        let investigation = Investigation {
-            id: format!("inv_{}", Utc::now().timestamp()),
-            title: self.new_investigation.title.clone(),
-            description: self.new_investigation.description.clone(),
-            component_id: self.new_investigation.component_id.clone().unwrap_or_else(|| "unknown".to_string()),
-            investigator: if self.new_investigation.investigator.is_empty() {
-                None
+        let investigation = Investigation::new(
+            self.new_investigation.component_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            self.new_investigation.investigation_type.clone(),
+            serde_json::json!({
+                "title": self.new_investigation.title,
+                "description": self.new_investigation.description,
+                "status": "Open"
+            })
+        ).with_investigator(
+            if self.new_investigation.investigator.is_empty() {
+                "Anonymous".to_string()
             } else {
-                Some(self.new_investigation.investigator.clone())
-            },
-            status: "Open".to_string(),
-            findings: serde_json::json!({}),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
+                self.new_investigation.investigator.clone()
+            }
+        );
 
         self.investigations.push(investigation);
         self.new_investigation = NewInvestigationForm::default();

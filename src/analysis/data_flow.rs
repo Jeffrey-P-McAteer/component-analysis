@@ -21,7 +21,7 @@ pub struct TaintSource {
     pub risk_level: RiskLevel,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum TaintSourceType {
     UserInput,
     NetworkInput,
@@ -40,7 +40,7 @@ pub struct TaintSink {
     pub risk_level: RiskLevel,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum TaintSinkType {
     SystemCall,
     NetworkOutput,

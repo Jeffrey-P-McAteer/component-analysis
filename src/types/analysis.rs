@@ -79,8 +79,9 @@ impl AnalysisResult {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum InvestigationType {
+    #[default]
     Manual,
     Automated,
     Review,
