@@ -5,6 +5,10 @@ use crate::types::{Component, ComponentType};
 #[cfg(feature = "gui")]
 use crate::visualization::{ComponentGraph, ComponentDetailView, FilterPanel, GraphLayout};
 #[cfg(feature = "gui")]
+use crate::investigation::InvestigationManager;
+#[cfg(feature = "gui")]
+use crate::performance::PerformanceManager;
+#[cfg(feature = "gui")]
 use egui::{Context, Ui};
 #[cfg(feature = "gui")]
 use std::path::{Path, PathBuf};
@@ -24,6 +28,14 @@ pub struct AnalyzerApp {
     filter_panel: FilterPanel,
     view_mode: ViewMode,
     show_filters: bool,
+    
+    // Investigation support
+    investigation_manager: InvestigationManager,
+    show_investigation_panel: bool,
+    
+    // Performance monitoring
+    performance_manager: PerformanceManager,
+    show_performance_panel: bool,
 }
 
 #[cfg(feature = "gui")]
@@ -31,6 +43,7 @@ pub struct AnalyzerApp {
 enum ViewMode {
     List,
     Graph,
+    Investigation,
 }
 
 #[cfg(feature = "gui")]
@@ -48,17 +61,28 @@ impl AnalyzerApp {
             filter_panel: FilterPanel::new(),
             view_mode: ViewMode::List,
             show_filters: false,
+            investigation_manager: InvestigationManager::new(),
+            show_investigation_panel: false,
+            performance_manager: PerformanceManager::new(),
+            show_performance_panel: false,
         };
         
         // Load initial data
         if let Err(e) = app.load_components() {
             app.error_message = Some(format!("Failed to load components: {}", e));
         }
+
+        // Load investigations
+        if let Err(e) = app.investigation_manager.load_investigations(&app.db_path) {
+            app.error_message = Some(format!("Failed to load investigations: {}", e));
+        }
         
         app
     }
 
     fn load_components(&mut self) -> anyhow::Result<()> {
+        let timer = self.performance_manager.start_timer("load_components");
+        
         let db = open_database(&self.db_path)?;
         let conn = db.connection();
         
@@ -74,6 +98,11 @@ impl AnalyzerApp {
         if self.view_mode == ViewMode::Graph {
             self.components.retain(|c| self.filter_panel.matches_component(c));
         }
+        
+        // Update performance metrics
+        self.performance_manager.update_component_count("loaded", self.components.len());
+        self.performance_manager.record_timer(timer);
+        self.performance_manager.update_memory_usage();
         
         self.load_graph()?;
         Ok(())
@@ -254,12 +283,24 @@ impl eframe::App for AnalyzerApp {
                         self.error_message = Some(format!("Failed to load graph: {}", e));
                     }
                 }
+                if ui.selectable_value(&mut self.view_mode, ViewMode::Investigation, "Investigation").clicked() {
+                    if let Err(e) = self.investigation_manager.load_investigations(&self.db_path) {
+                        self.error_message = Some(format!("Failed to load investigations: {}", e));
+                    }
+                }
 
                 ui.separator();
 
                 // Filter toggle
                 if ui.button(if self.show_filters { "Hide Filters" } else { "Show Filters" }).clicked() {
                     self.show_filters = !self.show_filters;
+                }
+
+                ui.separator();
+
+                // Performance panel toggle
+                if ui.button(if self.show_performance_panel { "Hide Performance" } else { "Show Performance" }).clicked() {
+                    self.show_performance_panel = !self.show_performance_panel;
                 }
 
                 ui.separator();
@@ -273,13 +314,17 @@ impl eframe::App for AnalyzerApp {
             });
         });
 
-        // Left panel - either component list or filters
-        if self.view_mode == ViewMode::List || self.show_filters {
+        // Left panel - either component list, filters, or investigation list
+        if self.view_mode == ViewMode::List || self.show_filters || self.view_mode == ViewMode::Investigation {
             egui::SidePanel::left("left_panel")
                 .default_width(400.0)
                 .show(ctx, |ui| {
                     if self.view_mode == ViewMode::List {
                         self.show_component_list(ui);
+                    } else if self.view_mode == ViewMode::Investigation {
+                        // Investigation view uses full central panel, so show investigation controls here
+                        ui.heading("Investigation Console");
+                        ui.label("Use central panel for full investigation interface");
                     } else if self.show_filters {
                         if self.filter_panel.render(ui) {
                             // Filters changed, reload components
@@ -292,10 +337,30 @@ impl eframe::App for AnalyzerApp {
         }
 
         // Right panel for details
+        let right_panel_width = if self.show_performance_panel { 500.0 } else { 350.0 };
         egui::SidePanel::right("details_panel")
-            .default_width(350.0)
+            .default_width(right_panel_width)
             .show(ctx, |ui| {
-                self.show_component_details(ui);
+                if self.show_performance_panel {
+                    // Split right panel for details and performance
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_width(250.0);
+                            ui.heading("Component Details");
+                            ui.separator();
+                            self.show_component_details(ui);
+                        });
+                        
+                        ui.separator();
+                        
+                        ui.vertical(|ui| {
+                            ui.set_width(230.0);
+                            self.show_performance_panel(ui);
+                        });
+                    });
+                } else {
+                    self.show_component_details(ui);
+                }
             });
 
         // Central panel - main content
@@ -323,6 +388,17 @@ impl eframe::App for AnalyzerApp {
                 ViewMode::Graph => {
                     self.show_graph_view(ui);
                 }
+                ViewMode::Investigation => {
+                    let selected_component = self.selected_component.as_ref()
+                        .and_then(|id| self.components.iter().find(|c| &c.id == id));
+                    
+                    if self.investigation_manager.render(ui, selected_component) {
+                        // Investigation data changed, refresh if needed
+                        if let Err(e) = self.investigation_manager.load_investigations(&self.db_path) {
+                            self.error_message = Some(format!("Failed to refresh investigations: {}", e));
+                        }
+                    }
+                }
             }
         });
 
@@ -337,5 +413,86 @@ impl eframe::App for AnalyzerApp {
                     ui.label(format!("Database: {}", self.db_path.display()));
                 });
             });
+    }
+}
+
+#[cfg(feature = "gui")]
+impl AnalyzerApp {
+    fn show_performance_panel(&mut self, ui: &mut Ui) {
+        ui.heading("Performance Monitor");
+        ui.separator();
+        
+        // Analysis timing
+        if !self.performance_manager.metrics.analysis_times.is_empty() {
+            ui.collapsing("Analysis Timing", |ui| {
+                for (operation, duration) in &self.performance_manager.metrics.analysis_times {
+                    ui.label(format!("{}: {:?}", operation, duration));
+                }
+            });
+        }
+        
+        // Component counts
+        if !self.performance_manager.metrics.component_counts.is_empty() {
+            ui.collapsing("Component Counts", |ui| {
+                for (component_type, count) in &self.performance_manager.metrics.component_counts {
+                    ui.label(format!("{}: {}", component_type, count));
+                }
+            });
+        }
+        
+        // Memory usage
+        ui.collapsing("Memory Usage", |ui| {
+            let mem = &self.performance_manager.metrics.memory_usage;
+            ui.label(format!("Peak: {} MB", mem.peak_memory_mb));
+            ui.label(format!("Current: {} MB", mem.current_memory_mb));
+            ui.label(format!("Components: {} MB", mem.component_memory_mb));
+            ui.label(format!("Analysis: {} MB", mem.analysis_memory_mb));
+        });
+        
+        // Processing rate
+        if self.performance_manager.metrics.processing_rate > 0.0 {
+            ui.separator();
+            ui.label(format!("Processing Rate: {:.2} comp/sec", 
+                self.performance_manager.metrics.processing_rate));
+        }
+        
+        // Cache statistics
+        let cache_stats = &self.performance_manager.metrics.cache_stats;
+        if cache_stats.hits + cache_stats.misses > 0 {
+            ui.collapsing("Cache Statistics", |ui| {
+                ui.label(format!("Hits: {}", cache_stats.hits));
+                ui.label(format!("Misses: {}", cache_stats.misses));
+                ui.label(format!("Hit Rate: {:.1}%", cache_stats.hit_rate * 100.0));
+                ui.label(format!("Cache Size: {} MB", cache_stats.cache_size_mb));
+            });
+        }
+        
+        // Optimization recommendations
+        let recommendations = self.performance_manager.get_optimization_recommendations();
+        if !recommendations.is_empty() {
+            ui.separator();
+            ui.collapsing("Recommendations", |ui| {
+                for rec in &recommendations {
+                    ui.colored_label(
+                        match rec.severity {
+                            crate::performance::RecommendationSeverity::Critical => egui::Color32::RED,
+                            crate::performance::RecommendationSeverity::High => egui::Color32::from_rgb(255, 165, 0),
+                            crate::performance::RecommendationSeverity::Medium => egui::Color32::YELLOW,
+                            crate::performance::RecommendationSeverity::Low => egui::Color32::LIGHT_BLUE,
+                        },
+                        format!("{:?}", rec.severity)
+                    );
+                    ui.label(format!("Category: {:?}", rec.category));
+                    ui.label(&rec.description);
+                    ui.label(format!("Action: {}", rec.action));
+                    ui.separator();
+                }
+            });
+        }
+        
+        // Clear metrics button
+        if ui.button("Clear Metrics").clicked() {
+            self.performance_manager = PerformanceManager::new();
+        }
     }
 }

@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod database;
 pub mod visualize;
+pub mod dynamic_analysis;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -71,5 +72,32 @@ pub enum Commands {
         #[arg(long)]
         #[arg(help = "Initialize database schema")]
         init: bool,
+    },
+
+    #[command(about = "Dynamic analysis using sandboxes")]
+    Dynamic {
+        #[arg(short, long)]
+        #[arg(help = "Component ID to analyze dynamically")]
+        component_id: String,
+
+        #[arg(long, default_value = "docker-ubuntu")]
+        #[arg(help = "Sandbox environment to use")]
+        sandbox: String,
+
+        #[arg(long, default_value = "300")]
+        #[arg(help = "Analysis timeout in seconds")]
+        timeout: u64,
+
+        #[arg(long)]
+        #[arg(help = "List available sandboxes")]
+        list_sandboxes: bool,
+
+        #[arg(long)]
+        #[arg(help = "Show analysis session status")]
+        status: Option<String>,
+
+        #[arg(long)]
+        #[arg(help = "Generate report for completed session")]
+        report: Option<String>,
     },
 }

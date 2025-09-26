@@ -2,6 +2,7 @@ use crate::database::{open_database, ComponentQueries};
 use crate::parser::BinaryParser;
 use crate::types::{Component, ComponentType, Relationship, RelationshipType};
 use crate::analysis::{DisassemblyEngine, CallGraphBuilder, SyscallAnalyzer, CapabilityAnalyzer, create_disassembler_for_binary};
+use crate::performance::{PerformanceManager, OptimizationStrategy};
 use anyhow::Result;
 use log::{info, warn, debug};
 use std::path::Path;
@@ -15,6 +16,10 @@ pub fn run(
     deep: bool,
 ) -> Result<()> {
     info!("Starting analysis of {}", input_path.display());
+    
+    // Initialize performance manager
+    let mut perf_manager = PerformanceManager::new();
+    let analysis_timer = perf_manager.start_timer("total_analysis");
     
     // Open database
     let db = open_database(db_path)?;
@@ -58,9 +63,16 @@ pub fn run(
     };
 
     // Extract functions and perform deep analysis if enabled
+    let function_timer = perf_manager.start_timer("function_extraction");
     match parser.extract_functions() {
         Ok(functions) => {
-            info!("Found {} functions", functions.len());
+            perf_manager.record_timer(function_timer);
+            let function_count = functions.len();
+            info!("Found {} functions", function_count);
+            
+            // Optimize analysis based on function count
+            let optimization_strategy = perf_manager.optimize_for_scale(function_count);
+            log_optimization_strategy(&optimization_strategy);
             
             // Initialize call graph builder if we have analysis engines
             let mut call_graph_builder = if let Some((ref disassembler, _, _)) = analysis_engines {
@@ -70,7 +82,27 @@ pub fn run(
                 None
             };
             
-            for function in functions {
+            perf_manager.update_component_count("functions", function_count);
+            let process_timer = perf_manager.start_timer("function_processing");
+            
+            // Process functions (with batch optimization if enabled)
+            if optimization_strategy.use_parallel_processing && function_count > 100 {
+                info!("Processing {} functions in batches of {}", function_count, optimization_strategy.batch_size);
+                let mut batch_processor = perf_manager.optimizer.create_batch_processor(functions);
+                
+                while let Some(batch) = batch_processor.next_batch() {
+                    let batch_timer = perf_manager.start_timer("batch_processing");
+                    process_function_batch(batch, &binary_component, conn, &mut call_graph_builder)?;
+                    perf_manager.record_timer(batch_timer);
+                    
+                    if batch_processor.remaining_batches() % 10 == 0 {
+                        info!("Progress: {:.1}%", batch_processor.progress_percentage());
+                        perf_manager.update_memory_usage();
+                    }
+                }
+            } else {
+                // Process functions sequentially
+                for function in functions {
                 // Create function component
                 let function_name = function.name.clone()
                     .unwrap_or_else(|| format!("func_{:x}", function.address));
@@ -106,7 +138,10 @@ pub fn run(
 
                 debug!("Added function: {} at 0x{:x}", 
                        function_component.name, function.address);
+                }
             }
+            
+            perf_manager.record_timer(process_timer);
 
             // Build call graph if deep analysis is enabled
             if let Some(mut builder) = call_graph_builder {
@@ -262,6 +297,13 @@ pub fn run(
         analyze_network_capabilities(&binary_component, conn, deep, &analysis_engines)?;
     }
 
+    // Record final analysis metrics
+    perf_manager.record_timer(analysis_timer);
+    perf_manager.update_memory_usage();
+    
+    // Display performance summary
+    display_performance_summary(&perf_manager);
+    
     info!("Analysis complete");
     Ok(())
 }
@@ -335,4 +377,95 @@ fn analyze_network_capabilities(
     }
     
     Ok(())
+}
+
+fn process_function_batch(
+    batch: &[crate::types::Function],
+    binary_component: &Component,
+    conn: &rusqlite::Connection,
+    call_graph_builder: &mut Option<CallGraphBuilder>,
+) -> Result<()> {
+    for function in batch {
+        // Create function component
+        let function_name = function.name.clone()
+            .unwrap_or_else(|| format!("func_{:x}", function.address));
+        
+        let mut function_component = Component::new(ComponentType::Function, function_name);
+        function_component = function_component.with_metadata(
+            "address".to_string(),
+            serde_json::json!(format!("0x{:x}", function.address))
+        );
+        
+        if let Some(size) = function.size {
+            function_component = function_component.with_metadata(
+                "size".to_string(),
+                serde_json::json!(size)
+            );
+        }
+
+        // Add to call graph builder for deep analysis
+        if let Some(ref mut builder) = call_graph_builder {
+            builder.add_function(function.clone());
+        }
+
+        // Insert function component
+        function_component.insert(conn)?;
+
+        // Create relationship: binary contains function
+        let relationship = Relationship::new(
+            binary_component.id.clone(),
+            function_component.id.clone(),
+            RelationshipType::Contains,
+        );
+        relationship.insert(conn)?;
+
+        debug!("Added function: {} at 0x{:x}", 
+               function_component.name, function.address);
+    }
+    Ok(())
+}
+
+fn log_optimization_strategy(strategy: &OptimizationStrategy) {
+    info!("Analysis optimization strategy:");
+    info!("  Parallel processing: {}", strategy.use_parallel_processing);
+    info!("  Batch size: {}", strategy.batch_size);
+    info!("  Streaming: {}", strategy.enable_streaming);
+    info!("  Caching: {}", strategy.enable_caching);
+    info!("  Memory conservative: {}", strategy.memory_conservative);
+}
+
+fn display_performance_summary(perf_manager: &PerformanceManager) {
+    info!("=== Performance Summary ===");
+    
+    // Analysis timing
+    for (operation, duration) in &perf_manager.metrics.analysis_times {
+        info!("  {}: {:?}", operation, duration);
+    }
+    
+    // Component counts
+    for (component_type, count) in &perf_manager.metrics.component_counts {
+        info!("  {}: {} components", component_type, count);
+    }
+    
+    // Memory usage
+    info!("  Peak memory: {} MB", perf_manager.metrics.memory_usage.peak_memory_mb);
+    info!("  Processing rate: {:.2} components/sec", perf_manager.metrics.processing_rate);
+    
+    // Cache statistics
+    if perf_manager.metrics.cache_stats.hits + perf_manager.metrics.cache_stats.misses > 0 {
+        info!("  Cache hit rate: {:.1}%", perf_manager.metrics.cache_stats.hit_rate * 100.0);
+    }
+    
+    // Performance recommendations
+    let recommendations = perf_manager.get_optimization_recommendations();
+    if !recommendations.is_empty() {
+        info!("=== Optimization Recommendations ===");
+        for rec in &recommendations {
+            info!("  {} - {}: {}", 
+                format!("{:?}", rec.severity), 
+                format!("{:?}", rec.category), 
+                rec.description
+            );
+        }
+    }
 }

@@ -11,6 +11,7 @@ pub enum AnalysisType {
     DataFlow,
     TaintAnalysis,
     NetworkAnalysis,
+    DynamicAnalysis,
 }
 
 impl std::fmt::Display for AnalysisType {
@@ -23,6 +24,7 @@ impl std::fmt::Display for AnalysisType {
             AnalysisType::DataFlow => write!(f, "data_flow"),
             AnalysisType::TaintAnalysis => write!(f, "taint_analysis"),
             AnalysisType::NetworkAnalysis => write!(f, "network_analysis"),
+            AnalysisType::DynamicAnalysis => write!(f, "dynamic_analysis"),
         }
     }
 }
@@ -39,6 +41,7 @@ impl std::str::FromStr for AnalysisType {
             "data_flow" => Ok(AnalysisType::DataFlow),
             "taint_analysis" => Ok(AnalysisType::TaintAnalysis),
             "network_analysis" => Ok(AnalysisType::NetworkAnalysis),
+            "dynamic_analysis" => Ok(AnalysisType::DynamicAnalysis),
             _ => Err(anyhow::anyhow!("Unknown analysis type: {}", s)),
         }
     }

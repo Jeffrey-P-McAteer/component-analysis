@@ -5,6 +5,10 @@ mod analysis;
 mod types;
 #[cfg(feature = "gui")]
 mod visualization;
+#[cfg(feature = "gui")]
+mod investigation;
+mod performance;
+mod dynamic;
 
 use anyhow::Result;
 use clap::Parser;
@@ -78,6 +82,26 @@ fn main() -> Result<()> {
                 cli::database::stats(&cli.analysis_data)?;
             }
             Ok(())
+        }
+
+        Commands::Dynamic {
+            component_id,
+            sandbox,
+            timeout,
+            list_sandboxes,
+            status,
+            report,
+        } => {
+            info!("Dynamic analysis command");
+            cli::dynamic_analysis::run(
+                &cli.analysis_data,
+                component_id,
+                sandbox,
+                *timeout,
+                *list_sandboxes,
+                status.as_deref(),
+                report.as_deref(),
+            )
         }
     }
 }

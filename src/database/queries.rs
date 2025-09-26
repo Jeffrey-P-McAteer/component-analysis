@@ -50,6 +50,23 @@ impl ComponentQueries {
         Ok(components)
     }
 
+    pub fn get_by_id_pattern(conn: &Connection, pattern: &str) -> Result<Vec<Component>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, component_type, name, path, hash, metadata, created_at, updated_at
+             FROM components WHERE id LIKE ?1 ORDER BY name"
+        )?;
+
+        let search_pattern = format!("%{}%", pattern);
+        let rows = stmt.query_map([search_pattern], |row| Component::from_row(row))?;
+
+        let mut components = Vec::new();
+        for component in rows {
+            components.push(component?);
+        }
+
+        Ok(components)
+    }
+
     pub fn get_all(conn: &Connection) -> Result<Vec<Component>> {
         let mut stmt = conn.prepare(
             "SELECT id, component_type, name, path, hash, metadata, created_at, updated_at
