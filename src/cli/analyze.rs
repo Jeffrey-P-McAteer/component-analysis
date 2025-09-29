@@ -133,6 +133,7 @@ pub fn run(
                     binary_component.id.clone(),
                     function_component.id.clone(),
                     RelationshipType::Contains,
+                    serde_json::json!({}),
                 );
                 relationship.insert(conn)?;
 
@@ -168,6 +169,7 @@ pub fn run(
                                                 caller_comp.id.clone(),
                                                 callee_comp.id.clone(),
                                                 RelationshipType::Calls,
+                                                serde_json::json!({}),
                                             );
                                             call_relationship.insert(conn)?;
                                         }
@@ -274,6 +276,7 @@ pub fn run(
                         binary_component.id.clone(),
                         import_component.id.clone(),
                         RelationshipType::Imports,
+                        serde_json::json!({}),
                     );
                     relationship.insert(conn)?;
 
@@ -416,6 +419,7 @@ fn process_function_batch(
             binary_component.id.clone(),
             function_component.id.clone(),
             RelationshipType::Contains,
+            serde_json::json!({}),
         );
         relationship.insert(conn)?;
 

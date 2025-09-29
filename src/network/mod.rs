@@ -1,11 +1,19 @@
-use crate::types::{Component, Relationship, RelationshipType, AnalysisResult, AnalysisType, RiskLevel};
+use crate::types::{Component, Relationship, RelationshipType, AnalysisResult, AnalysisType, RiskLevel, ComponentType};
 use anyhow::Result;
 use log::{info, warn, debug};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::time::{Duration, Instant};
+use std::io::{Read, Write};
 use petgraph::{Graph, Directed, graph::NodeIndex};
 use chrono::{DateTime, Utc};
+use std::process::Command;
+use std::thread;
+use std::sync::{Arc, Mutex};
+use tokio::net::TcpSocket;
+use tokio::time::timeout;
+use futures::future::join_all;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkTopologyAnalyzer {
@@ -15,6 +23,131 @@ pub struct NetworkTopologyAnalyzer {
     pub communication_patterns: Vec<CommunicationPattern>,
     pub attack_paths: Vec<AttackPath>,
     pub threat_indicators: Vec<NetworkThreatIndicator>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkScanner {
+    pub scan_config: ScanConfig,
+    pub discovered_hosts: Vec<ScannedHost>,
+    pub scan_results: HashMap<String, ScanResult>,
+    pub active_scans: Vec<ScanSession>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanConfig {
+    pub target_ranges: Vec<String>,
+    pub port_ranges: Vec<PortRange>,
+    pub scan_type: ScanType,
+    pub timeout_ms: u64,
+    pub max_threads: usize,
+    pub tcp_scan: bool,
+    pub icmp_scan: bool,
+    pub service_detection: bool,
+    pub aggressive_scan: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScanType {
+    TcpConnect,
+    TcpSyn,
+    IcmpPing,
+    ComprehensiveScan,
+    ServiceDiscovery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScannedHost {
+    pub ip_address: IpAddr,
+    pub hostname: Option<String>,
+    pub mac_address: Option<String>,
+    pub responsive: bool,
+    pub open_ports: Vec<ScannedPort>,
+    pub icmp_responsive: bool,
+    pub operating_system: Option<OSFingerprint>,
+    pub scan_time: DateTime<Utc>,
+    pub response_time: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScannedPort {
+    pub port: u16,
+    pub protocol: NetworkProtocol,
+    pub state: PortState,
+    pub service: Option<DetectedService>,
+    pub banner: Option<String>,
+    pub response_time: Option<Duration>,
+    pub fingerprint: Option<ServiceFingerprint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectedService {
+    pub name: String,
+    pub version: Option<String>,
+    pub product: Option<String>,
+    pub extra_info: Option<String>,
+    pub confidence: f64,
+    pub cpe: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceFingerprint {
+    pub protocol: String,
+    pub service_type: String,
+    pub banner_pattern: Option<String>,
+    pub probe_response: Option<String>,
+    pub version_detection: Vec<VersionMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionMatch {
+    pub pattern: String,
+    pub product: String,
+    pub version: String,
+    pub info: Option<String>,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OSFingerprint {
+    pub os_family: String,
+    pub os_name: String,
+    pub os_version: Option<String>,
+    pub device_type: Option<String>,
+    pub confidence: f64,
+    pub tcp_fingerprint: Option<String>,
+    pub icmp_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanResult {
+    pub target: String,
+    pub scan_start: DateTime<Utc>,
+    pub scan_end: DateTime<Utc>,
+    pub hosts_discovered: usize,
+    pub ports_scanned: usize,
+    pub services_identified: usize,
+    pub scan_status: ScanStatus,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScanStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSession {
+    pub session_id: String,
+    pub target_range: String,
+    pub scan_type: ScanType,
+    pub start_time: DateTime<Utc>,
+    pub status: ScanStatus,
+    pub progress_percent: f32,
+    pub hosts_found: usize,
+    pub total_targets: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,7 +254,7 @@ pub struct NetworkPort {
     pub banner: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PortState {
     Open,
     Closed,
@@ -992,5 +1125,1063 @@ impl NetworkGraph {
 impl Default for NetworkTopologyAnalyzer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl NetworkScanner {
+    pub fn new(config: ScanConfig) -> Self {
+        Self {
+            scan_config: config,
+            discovered_hosts: Vec::new(),
+            scan_results: HashMap::new(),
+            active_scans: Vec::new(),
+        }
+    }
+
+    pub fn scan_network(&mut self, target_range: &str) -> Result<ScanResult> {
+        info!("Starting network scan for range: {}", target_range);
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let scan_start = Utc::now();
+
+        let session = ScanSession {
+            session_id: session_id.clone(),
+            target_range: target_range.to_string(),
+            scan_type: self.scan_config.scan_type.clone(),
+            start_time: scan_start,
+            status: ScanStatus::InProgress,
+            progress_percent: 0.0,
+            hosts_found: 0,
+            total_targets: 0,
+        };
+
+        self.active_scans.push(session);
+
+        let hosts = match self.scan_config.scan_type {
+            ScanType::TcpConnect => self.perform_tcp_scan(target_range)?,
+            ScanType::IcmpPing => self.perform_icmp_scan(target_range)?,
+            ScanType::ComprehensiveScan => self.perform_comprehensive_scan(target_range)?,
+            ScanType::ServiceDiscovery => self.perform_service_discovery_scan(target_range)?,
+            _ => self.perform_tcp_scan(target_range)?,
+        };
+
+        let scan_end = Utc::now();
+        let result = ScanResult {
+            target: target_range.to_string(),
+            scan_start,
+            scan_end,
+            hosts_discovered: hosts.len(),
+            ports_scanned: self.count_scanned_ports(&hosts),
+            services_identified: self.count_identified_services(&hosts),
+            scan_status: ScanStatus::Completed,
+            error_message: None,
+        };
+
+        self.discovered_hosts.extend(hosts);
+        self.scan_results.insert(session_id, result.clone());
+
+        info!("Network scan completed. Found {} hosts", result.hosts_discovered);
+        Ok(result)
+    }
+
+    fn perform_tcp_scan(&self, target_range: &str) -> Result<Vec<ScannedHost>> {
+        info!("Performing TCP connect scan (always using async scanner for optimal performance)");
+        
+        // Always use async scanning for optimal performance and timeouts
+        self.perform_tcp_scan_async(target_range)
+    }
+
+    fn perform_tcp_scan_async(&self, target_range: &str) -> Result<Vec<ScannedHost>> {
+        // Create a new Tokio runtime for async scanning
+        let rt = tokio::runtime::Runtime::new()?;
+        
+        rt.block_on(async {
+            let targets = self.parse_target_range(target_range)?;
+            let mut discovered_hosts = Vec::new();
+            
+            info!("Starting async TCP scan for {} targets", targets.len());
+            
+            // Create async tasks for each target
+            let mut tasks = Vec::new();
+            
+            for target_ip in targets {
+                let config = self.scan_config.clone();
+                let task = async move {
+                    Self::scan_tcp_host_async(target_ip, &config).await
+                };
+                tasks.push(task);
+            }
+            
+            // Execute all scans concurrently with timeout
+            let scan_timeout = Duration::from_secs(65); // Slightly more than individual host timeout
+            let results = match timeout(scan_timeout, join_all(tasks)).await {
+                Ok(results) => results,
+                Err(_) => {
+                    warn!("Overall TCP scan timeout after 65 seconds");
+                    return Ok(Vec::new());
+                }
+            };
+            
+            // Collect results
+            for result in results {
+                if let Ok(host) = result {
+                    if host.responsive || !host.open_ports.is_empty() {
+                        discovered_hosts.push(host);
+                    }
+                }
+            }
+            
+            info!("Async TCP scan completed, found {} responsive hosts", discovered_hosts.len());
+            Ok(discovered_hosts)
+        })
+    }
+
+    async fn scan_tcp_host_async(ip: IpAddr, config: &ScanConfig) -> Result<ScannedHost> {
+        let scan_start = Instant::now();
+        
+        // Collect all ports to scan
+        let mut all_ports = Vec::new();
+        for port_range in &config.port_ranges {
+            for port in port_range.start_port..=port_range.end_port {
+                all_ports.push(port);
+            }
+        }
+        
+        info!("Scanning {} ports on {} with async TCP scanner", all_ports.len(), ip);
+        
+        // Use aggressive timeouts for 10k+ port scans
+        let port_timeout = if all_ports.len() > 5000 {
+            Duration::from_millis(50) // 50ms for large port ranges
+        } else if all_ports.len() > 1000 {
+            Duration::from_millis(100) // 100ms for medium port ranges  
+        } else {
+            Duration::from_millis(config.timeout_ms.min(500)) // Normal timeout for small ranges
+        };
+        
+        // Create concurrent tasks for all ports
+        let mut tasks = Vec::new();
+        
+        for port in all_ports {
+            let task = Self::scan_single_port_async(ip, port, port_timeout);
+            tasks.push(task);
+        }
+        
+        // Execute all port scans concurrently with overall timeout
+        let overall_timeout = Duration::from_secs(60); // 60 second overall limit
+        let results = match timeout(overall_timeout, join_all(tasks)).await {
+            Ok(results) => results,
+            Err(_) => {
+                warn!("TCP scan timeout after 60 seconds for {}", ip);
+                return Ok(ScannedHost {
+                    ip_address: ip,
+                    hostname: None,
+                    mac_address: None,
+                    responsive: false,
+                    open_ports: Vec::new(),
+                    icmp_responsive: false,
+                    operating_system: None,
+                    scan_time: Utc::now(),
+                    response_time: Some(scan_start.elapsed()),
+                });
+            }
+        };
+        
+        // Collect successful open ports
+        let mut open_ports = Vec::new();
+        let mut responsive = false;
+        
+        for result in results {
+            if let Ok(scanned_port) = result {
+                if scanned_port.state == PortState::Open {
+                    responsive = true;
+                    open_ports.push(scanned_port);
+                }
+            }
+        }
+        
+        let response_time = Some(scan_start.elapsed());
+        let hostname = Self::resolve_hostname(ip);
+        
+        info!("Async TCP scan of {} completed in {:?}, found {} open ports", 
+               ip, response_time.unwrap(), open_ports.len());
+
+        Ok(ScannedHost {
+            ip_address: ip,
+            hostname,
+            mac_address: None,
+            responsive,
+            open_ports,
+            icmp_responsive: false,
+            operating_system: None,
+            scan_time: Utc::now(),
+            response_time,
+        })
+    }
+
+    async fn scan_single_port_async(ip: IpAddr, port: u16, timeout_duration: Duration) -> Result<ScannedPort> {
+        let socket_addr = SocketAddr::new(ip, port);
+        let scan_start = Instant::now();
+        
+        // Create socket based on IP version
+        let socket = match ip {
+            IpAddr::V4(_) => TcpSocket::new_v4()?,
+            IpAddr::V6(_) => TcpSocket::new_v6()?,
+        };
+        
+        // Set socket options for faster scanning
+        socket.set_nodelay(true)?;
+        
+        let state = match timeout(timeout_duration, socket.connect(socket_addr)).await {
+            Ok(Ok(_stream)) => {
+                // Successfully connected - port is open
+                PortState::Open
+            }
+            Ok(Err(_)) | Err(_) => {
+                // Connection failed or timed out - port is closed/filtered
+                PortState::Closed
+            }
+        };
+        
+        let response_time = Some(scan_start.elapsed());
+        
+        Ok(ScannedPort {
+            port,
+            protocol: NetworkProtocol::TCP,
+            state,
+            service: None, // Will be filled by service detection later
+            banner: None,  // Skip banner grabbing in fast scan mode
+            response_time,
+            fingerprint: None,
+        })
+    }
+
+    fn scan_tcp_host(ip: IpAddr, config: &ScanConfig) -> Result<ScannedHost> {
+        let scan_start = Instant::now();
+        
+        // Collect all ports to scan
+        let mut all_ports = Vec::new();
+        for port_range in &config.port_ranges {
+            for port in port_range.start_port..=port_range.end_port {
+                all_ports.push(port);
+            }
+        }
+        
+        // Use threading for port scanning to prevent hanging on single IP
+        let open_ports_data = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::new();
+        let responsive_flag = Arc::new(Mutex::new(false));
+        
+        // Limit concurrent port scans to prevent overwhelming the target
+        let max_port_threads = config.max_threads.min(50);
+        
+        for chunk in all_ports.chunks(max_port_threads) {
+            for port in chunk {
+                let port = *port;
+                let config_timeout = config.timeout_ms;
+                let open_ports_data = Arc::clone(&open_ports_data);
+                let responsive_flag = Arc::clone(&responsive_flag);
+                
+                let handle = thread::spawn(move || {
+                    if let Ok(scanned_port) = Self::scan_tcp_port(ip, port, config_timeout) {
+                        if scanned_port.state == PortState::Open {
+                            *responsive_flag.lock().unwrap() = true;
+                            open_ports_data.lock().unwrap().push(scanned_port);
+                        }
+                    }
+                });
+                
+                handles.push(handle);
+            }
+            
+            // Wait for current batch to complete
+            for handle in handles.drain(..) {
+                let _ = handle.join();
+            }
+        }
+        
+        let open_ports = open_ports_data.lock().unwrap().clone();
+        let responsive = *responsive_flag.lock().unwrap();
+        let response_time = Some(scan_start.elapsed());
+        let hostname = Self::resolve_hostname(ip);
+
+        Ok(ScannedHost {
+            ip_address: ip,
+            hostname,
+            mac_address: None,
+            responsive,
+            open_ports,
+            icmp_responsive: false,
+            operating_system: None,
+            scan_time: Utc::now(),
+            response_time,
+        })
+    }
+
+    fn scan_tcp_port(ip: IpAddr, port: u16, timeout_ms: u64) -> Result<ScannedPort> {
+        let socket_addr = SocketAddr::new(ip, port);
+        let timeout = Duration::from_millis(timeout_ms);
+        let scan_start = Instant::now();
+
+        let state = match TcpStream::connect_timeout(&socket_addr, timeout) {
+            Ok(mut stream) => {
+                // Try to grab banner if service detection is enabled
+                let banner = Self::grab_banner(&mut stream, timeout);
+                PortState::Open
+            }
+            Err(_) => PortState::Closed,
+        };
+
+        let response_time = Some(scan_start.elapsed());
+
+        Ok(ScannedPort {
+            port,
+            protocol: NetworkProtocol::TCP,
+            state,
+            service: None, // Will be filled by service detection
+            banner: None,
+            response_time,
+            fingerprint: None,
+        })
+    }
+
+    fn grab_banner(stream: &mut TcpStream, timeout: Duration) -> Option<String> {
+        stream.set_read_timeout(Some(timeout)).ok()?;
+
+        let mut buffer = [0; 1024];
+        match stream.read(&mut buffer) {
+            Ok(bytes_read) if bytes_read > 0 => {
+                let banner = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                Some(banner.trim().to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn perform_icmp_scan(&self, target_range: &str) -> Result<Vec<ScannedHost>> {
+        info!("Performing ICMP ping scan");
+
+        let targets = self.parse_target_range(target_range)?;
+        
+        // Use threading to speed up ICMP scan and prevent hanging
+        let hosts_data = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::new();
+        
+        for chunk in targets.chunks(self.scan_config.max_threads) {
+            for target_ip in chunk {
+                let ip = *target_ip;
+                let config = self.scan_config.clone();
+                let hosts_data = Arc::clone(&hosts_data);
+                
+                let handle = thread::spawn(move || {
+                    if let Ok(host) = Self::ping_host_static(ip, &config) {
+                        if host.icmp_responsive {
+                            hosts_data.lock().unwrap().push(host);
+                        }
+                    }
+                });
+                
+                handles.push(handle);
+            }
+            
+            // Wait for current batch to complete
+            for handle in handles.drain(..) {
+                let _ = handle.join();
+            }
+        }
+        
+        let hosts = hosts_data.lock().unwrap().clone();
+        Ok(hosts)
+    }
+
+    fn ping_host_static(ip: IpAddr, config: &ScanConfig) -> Result<ScannedHost> {
+        let scan_start = Instant::now();
+        
+        // Calculate reasonable timeout (max 5 seconds, min 1 second)
+        let timeout_seconds = ((config.timeout_ms / 1000).max(1)).min(5);
+        
+        // Use system ping command for ICMP
+        let ping_result = match ip {
+            IpAddr::V4(ipv4) => {
+                Command::new("ping")
+                    .arg("-c")
+                    .arg("1")
+                    .arg("-W")
+                    .arg(format!("{}", timeout_seconds))
+                    .arg(ipv4.to_string())
+                    .output()
+            }
+            IpAddr::V6(ipv6) => {
+                Command::new("ping6")
+                    .arg("-c")
+                    .arg("1")
+                    .arg("-W")
+                    .arg(format!("{}", timeout_seconds))
+                    .arg(ipv6.to_string())
+                    .output()
+            }
+        };
+        
+        let icmp_responsive = match ping_result {
+            Ok(output) => {
+                // Check if the command completed within reasonable time
+                let elapsed = scan_start.elapsed();
+                let max_time = Duration::from_secs(timeout_seconds + 1);
+                if elapsed > max_time {
+                    warn!("Ping for {} took too long: {:?}", ip, elapsed);
+                    false
+                } else {
+                    output.status.success()
+                }
+            }
+            Err(_) => false,
+        };
+        
+        let response_time = Some(scan_start.elapsed());
+        let hostname = Self::resolve_hostname(ip);
+        
+        Ok(ScannedHost {
+            ip_address: ip,
+            hostname,
+            mac_address: None,
+            responsive: icmp_responsive,
+            open_ports: Vec::new(),
+            icmp_responsive,
+            operating_system: None,
+            scan_time: Utc::now(),
+            response_time,
+        })
+    }
+
+    fn ping_host(&self, ip: IpAddr) -> Result<ScannedHost> {
+        Self::ping_host_static(ip, &self.scan_config)
+    }
+
+    fn perform_comprehensive_scan(&self, target_range: &str) -> Result<Vec<ScannedHost>> {
+        info!("Performing comprehensive scan (TCP + ICMP + Service Detection)");
+
+        // For comprehensive scan, do ICMP first to check responsiveness
+        info!("Starting with ICMP ping to check host responsiveness...");
+        let icmp_hosts = self.perform_icmp_scan(target_range)?;
+        
+        // Count responsive vs non-responsive
+        let responsive_count = icmp_hosts.iter().filter(|h| h.icmp_responsive).count();
+        let total_count = icmp_hosts.len();
+        let non_responsive_count = total_count - responsive_count;
+        
+        info!("ICMP scan results: {} responsive, {} non-responsive hosts", 
+              responsive_count, non_responsive_count);
+        
+        if responsive_count == 0 {
+            info!("No hosts responded to ICMP ping, but continuing with full TCP scan for analysis...");
+        } else {
+            info!("Found {} ICMP-responsive hosts, continuing with TCP scan on all targets", responsive_count);
+        }
+
+        // Always perform TCP scan on ALL targets (both responsive and non-responsive)
+        // This ensures we capture complete data for analysis
+        info!("Performing TCP port scan on all {} target(s)...", total_count);
+        let mut tcp_hosts = self.perform_tcp_scan(target_range)?;
+
+        // Merge ICMP results with TCP results to preserve ICMP responsiveness data
+        for icmp_host in icmp_hosts {
+            if let Some(tcp_host) = tcp_hosts.iter_mut().find(|h| h.ip_address == icmp_host.ip_address) {
+                // Merge ICMP data into existing TCP host record
+                tcp_host.icmp_responsive = icmp_host.icmp_responsive;
+                if icmp_host.hostname.is_some() && tcp_host.hostname.is_none() {
+                    tcp_host.hostname = icmp_host.hostname;
+                }
+            } else {
+                // Create new host record for ICMP-only data (if no TCP ports were found)
+                // This ensures we capture ICMP non-responsive hosts that had no open TCP ports
+                let mut host_record = icmp_host;
+                host_record.responsive = false; // Mark as non-responsive since no TCP ports found
+                tcp_hosts.push(host_record);
+            }
+        }
+
+        // Perform service detection on all hosts (both responsive and non-responsive)
+        // This allows analysis of partial service information even from non-responsive hosts
+        if self.scan_config.service_detection {
+            info!("Performing service detection on {} hosts...", tcp_hosts.len());
+            let service_start = Instant::now();
+            let service_timeout = Duration::from_secs(60); // 60-second limit for service detection
+            
+            for (index, host) in tcp_hosts.iter_mut().enumerate() {
+                // Check if we've exceeded the service detection timeout
+                if service_start.elapsed() > service_timeout {
+                    warn!("Service detection timeout reached after 60 seconds, processed {} of {} hosts", 
+                          index, tcp_hosts.len());
+                    break;
+                }
+                
+                if host.responsive || !host.open_ports.is_empty() {
+                    // Only attempt service detection if host has open ports
+                    // Use a per-host timeout to prevent individual hosts from hanging
+                    let host_start = Instant::now();
+                    let host_timeout = Duration::from_secs(10); // 10 seconds per host max
+                    
+                    match self.detect_services_for_host_with_timeout(host, host_timeout) {
+                        Ok(_) => {
+                            debug!("Service detection for {} completed in {:?}", 
+                                   host.ip_address, host_start.elapsed());
+                        }
+                        Err(e) => {
+                            warn!("Service detection failed for {}: {}", host.ip_address, e);
+                        }
+                    }
+                }
+            }
+            
+            info!("Service detection phase completed in {:?}", service_start.elapsed());
+        }
+
+        // Log final statistics for analysis
+        let hosts_with_open_ports = tcp_hosts.iter().filter(|h| h.responsive).count();
+        let hosts_icmp_only = tcp_hosts.iter().filter(|h| !h.responsive && h.icmp_responsive).count();
+        let hosts_completely_unresponsive = tcp_hosts.iter().filter(|h| !h.responsive && !h.icmp_responsive).count();
+        
+        info!("Scan complete: {} hosts with open TCP ports, {} ICMP-only responsive, {} completely unresponsive", 
+              hosts_with_open_ports, hosts_icmp_only, hosts_completely_unresponsive);
+
+        Ok(tcp_hosts)
+    }
+
+    fn perform_service_discovery_scan(&self, target_range: &str) -> Result<Vec<ScannedHost>> {
+        info!("Performing service discovery scan");
+
+        let mut hosts = self.perform_tcp_scan(target_range)?;
+
+        // Enhanced service detection for all responsive hosts with timeout
+        info!("Starting service detection phase...");
+        let service_start = Instant::now();
+        let service_timeout = Duration::from_secs(60); // 60-second limit
+        
+        for host in &mut hosts {
+            if service_start.elapsed() > service_timeout {
+                warn!("Service discovery timeout reached after 60 seconds, skipping remaining hosts");
+                break;
+            }
+            
+            let host_timeout = Duration::from_secs(10); // 10 seconds per host
+            match self.detect_services_for_host_with_timeout(host, host_timeout) {
+                Ok(_) => {}
+                Err(e) => warn!("Service detection failed for {}: {}", host.ip_address, e),
+            }
+            
+            if self.scan_config.aggressive_scan {
+                match self.perform_os_fingerprinting(host) {
+                    Ok(_) => {}
+                    Err(e) => warn!("OS fingerprinting failed for {}: {}", host.ip_address, e),
+                }
+            }
+        }
+        
+        info!("Service discovery completed in {:?}", service_start.elapsed());
+        Ok(hosts)
+    }
+
+    fn detect_services_for_host(&self, host: &mut ScannedHost) -> Result<()> {
+        debug!("Detecting services for host: {}", host.ip_address);
+
+        for port in &mut host.open_ports {
+            if let Some(service) = self.identify_service(host.ip_address, port.port, &port.protocol) {
+                port.service = Some(service);
+            }
+
+            if let Some(fingerprint) = self.generate_service_fingerprint(host.ip_address, port.port) {
+                port.fingerprint = Some(fingerprint);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn detect_services_for_host_with_timeout(&self, host: &mut ScannedHost, timeout: Duration) -> Result<()> {
+        let start_time = Instant::now();
+        debug!("Detecting services for host: {} with timeout: {:?}", host.ip_address, timeout);
+
+        for port in &mut host.open_ports {
+            // Check timeout before each port
+            if start_time.elapsed() > timeout {
+                warn!("Service detection timeout reached for host {}, skipping remaining ports", host.ip_address);
+                break;
+            }
+
+            // Use faster service identification for timeouts
+            if let Some(service) = self.identify_service_fast(host.ip_address, port.port, &port.protocol, timeout) {
+                port.service = Some(service);
+            }
+
+            // Skip fingerprinting in timeout mode for speed
+            // if let Some(fingerprint) = self.generate_service_fingerprint(host.ip_address, port.port) {
+            //     port.fingerprint = Some(fingerprint);
+            // }
+        }
+
+        Ok(())
+    }
+
+    fn identify_service_fast(&self, ip: IpAddr, port: u16, _protocol: &NetworkProtocol, _timeout: Duration) -> Option<DetectedService> {
+        // Fast service identification based only on port numbers (no network probing)
+        let (service_name, _default_version): (&str, Option<&str>) = match port {
+            21 => ("ftp", None),
+            22 => ("ssh", None),
+            23 => ("telnet", None),
+            25 => ("smtp", None),
+            53 => ("dns", None),
+            80 => ("http", None),
+            110 => ("pop3", None),
+            143 => ("imap", None),
+            443 => ("https", None),
+            993 => ("imaps", None),
+            995 => ("pop3s", None),
+            3389 => ("rdp", None),
+            5432 => ("postgresql", None),
+            3306 => ("mysql", None),
+            1433 => ("mssql", None),
+            27017 => ("mongodb", None),
+            6379 => ("redis", None),
+            _ => ("unknown", None),
+        };
+        
+        // Return basic service info without network probing for speed
+        Some(DetectedService {
+            name: service_name.to_string(),
+            version: None, // Skip version detection for speed
+            product: None, // Skip product detection for speed
+            extra_info: None, // Skip extra info for speed
+            confidence: if service_name == "unknown" { 0.3 } else { 0.7 }, // Lower confidence without probing
+            cpe: None,
+        })
+    }
+
+    fn identify_service(&self, ip: IpAddr, port: u16, protocol: &NetworkProtocol) -> Option<DetectedService> {
+        // Common service identification based on port numbers
+        let (service_name, _default_version): (&str, Option<&str>) = match port {
+            21 => ("ftp", None),
+            22 => ("ssh", None),
+            23 => ("telnet", None),
+            25 => ("smtp", None),
+            53 => ("dns", None),
+            80 => ("http", None),
+            110 => ("pop3", None),
+            143 => ("imap", None),
+            443 => ("https", None),
+            993 => ("imaps", None),
+            995 => ("pop3s", None),
+            3389 => ("rdp", None),
+            5432 => ("postgresql", None),
+            3306 => ("mysql", None),
+            1433 => ("mssql", None),
+            27017 => ("mongodb", None),
+            6379 => ("redis", None),
+            _ => ("unknown", None),
+        };
+
+        // Try to get more detailed version information through banner grabbing
+        let version_info = self.probe_service_version(ip, port);
+
+        Some(DetectedService {
+            name: service_name.to_string(),
+            version: version_info.as_ref().and_then(|v| v.version.clone()),
+            product: version_info.as_ref().and_then(|v| v.product.clone()),
+            extra_info: version_info.as_ref().and_then(|v| v.extra_info.clone()),
+            confidence: version_info.as_ref().map(|v| v.confidence).unwrap_or(0.5),
+            cpe: None,
+        })
+    }
+
+    fn probe_service_version(&self, ip: IpAddr, port: u16) -> Option<DetectedService> {
+        let socket_addr = SocketAddr::new(ip, port);
+        let timeout = Duration::from_millis(self.scan_config.timeout_ms);
+
+        if let Ok(mut stream) = TcpStream::connect_timeout(&socket_addr, timeout) {
+            // Send service-specific probes and analyze responses
+            match port {
+                80 | 8080 | 8443 => self.probe_http_service(&mut stream),
+                21 => self.probe_ftp_service(&mut stream),
+                22 => self.probe_ssh_service(&mut stream),
+                25 => self.probe_smtp_service(&mut stream),
+                _ => self.probe_generic_service(&mut stream),
+            }
+        } else {
+            None
+        }
+    }
+
+    fn probe_http_service(&self, stream: &mut TcpStream) -> Option<DetectedService> {
+        let request = "GET / HTTP/1.1\r\nHost: localhost\r\nUser-Agent: ComponentAnalyzer/1.0\r\n\r\n";
+
+        if stream.write_all(request.as_bytes()).is_ok() {
+            let mut buffer = [0; 4096];
+            if let Ok(bytes_read) = stream.read(&mut buffer) {
+                let response = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+                // Parse HTTP response for server information
+                if let Some(server_line) = response.lines().find(|line| line.to_lowercase().starts_with("server:")) {
+                    let server_info = server_line.split(':').nth(1)?.trim();
+
+                    // Parse server version (simplified)
+                    let parts: Vec<&str> = server_info.split_whitespace().collect();
+                    if !parts.is_empty() {
+                        let product_version: Vec<&str> = parts[0].split('/').collect();
+                        return Some(DetectedService {
+                            name: "http".to_string(),
+                            version: product_version.get(1).map(|v| v.to_string()),
+                            product: Some(product_version[0].to_string()),
+                            extra_info: if parts.len() > 1 { Some(parts[1..].join(" ")) } else { None },
+                            confidence: 0.9,
+                            cpe: None,
+                        });
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn probe_ftp_service(&self, stream: &mut TcpStream) -> Option<DetectedService> {
+        let mut buffer = [0; 1024];
+        if let Ok(bytes_read) = stream.read(&mut buffer) {
+            let banner = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+            // FTP servers typically send a banner immediately
+            if banner.starts_with("220") {
+                // Parse FTP banner for version information
+                return Some(DetectedService {
+                    name: "ftp".to_string(),
+                    version: None,
+                    product: None,
+                    extra_info: Some(banner.trim().to_string()),
+                    confidence: 0.8,
+                    cpe: None,
+                });
+            }
+        }
+        None
+    }
+
+    fn probe_ssh_service(&self, stream: &mut TcpStream) -> Option<DetectedService> {
+        let mut buffer = [0; 1024];
+        if let Ok(bytes_read) = stream.read(&mut buffer) {
+            let banner = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+            // SSH servers send version string
+            if banner.starts_with("SSH-") {
+                let version_parts: Vec<&str> = banner.trim().split('-').collect();
+                if version_parts.len() >= 3 {
+                    return Some(DetectedService {
+                        name: "ssh".to_string(),
+                        version: Some(version_parts[1].to_string()),
+                        product: Some(version_parts[2].split_whitespace().next()?.to_string()),
+                        extra_info: Some(banner.trim().to_string()),
+                        confidence: 0.9,
+                        cpe: None,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn probe_smtp_service(&self, stream: &mut TcpStream) -> Option<DetectedService> {
+        let mut buffer = [0; 1024];
+        if let Ok(bytes_read) = stream.read(&mut buffer) {
+            let banner = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+            // SMTP servers send greeting
+            if banner.starts_with("220") {
+                return Some(DetectedService {
+                    name: "smtp".to_string(),
+                    version: None,
+                    product: None,
+                    extra_info: Some(banner.trim().to_string()),
+                    confidence: 0.8,
+                    cpe: None,
+                });
+            }
+        }
+        None
+    }
+
+    fn probe_generic_service(&self, stream: &mut TcpStream) -> Option<DetectedService> {
+        let mut buffer = [0; 1024];
+        if let Ok(bytes_read) = stream.read(&mut buffer) {
+            if bytes_read > 0 {
+                let banner = String::from_utf8_lossy(&buffer[..bytes_read]);
+                return Some(DetectedService {
+                    name: "unknown".to_string(),
+                    version: None,
+                    product: None,
+                    extra_info: Some(banner.trim().to_string()),
+                    confidence: 0.3,
+                    cpe: None,
+                });
+            }
+        }
+        None
+    }
+
+    fn generate_service_fingerprint(&self, ip: IpAddr, port: u16) -> Option<ServiceFingerprint> {
+        // Generate a basic service fingerprint
+        Some(ServiceFingerprint {
+            protocol: "tcp".to_string(),
+            service_type: "unknown".to_string(),
+            banner_pattern: None,
+            probe_response: None,
+            version_detection: Vec::new(),
+        })
+    }
+
+    fn perform_os_fingerprinting(&self, host: &mut ScannedHost) -> Result<()> {
+        debug!("Performing OS fingerprinting for host: {}", host.ip_address);
+
+        // Simple OS detection based on open ports and TTL values
+        let os_fingerprint = self.detect_operating_system(host);
+        host.operating_system = os_fingerprint;
+
+        Ok(())
+    }
+
+    fn detect_operating_system(&self, host: &ScannedHost) -> Option<OSFingerprint> {
+        // Simplified OS detection based on port patterns
+        let open_ports: Vec<u16> = host.open_ports.iter().map(|p| p.port).collect();
+
+        let (os_family, os_name, confidence) = if open_ports.contains(&135) && open_ports.contains(&445) {
+            ("Windows", "Microsoft Windows", 0.7)
+        } else if open_ports.contains(&22) && open_ports.contains(&80) {
+            ("Linux", "Linux", 0.6)
+        } else if open_ports.contains(&22) {
+            ("Unix", "Unix-like", 0.4)
+        } else {
+            ("Unknown", "Unknown", 0.1)
+        };
+
+        Some(OSFingerprint {
+            os_family: os_family.to_string(),
+            os_name: os_name.to_string(),
+            os_version: None,
+            device_type: None,
+            confidence,
+            tcp_fingerprint: None,
+            icmp_fingerprint: None,
+        })
+    }
+
+    fn parse_target_range(&self, target_range: &str) -> Result<Vec<IpAddr>> {
+        let mut targets = Vec::new();
+
+        if target_range.contains('/') {
+            // CIDR notation
+            targets.extend(self.parse_cidr_range(target_range)?);
+        } else if target_range.contains('-') {
+            // Range notation (e.g., 192.168.1.1-192.168.1.10)
+            targets.extend(self.parse_ip_range(target_range)?);
+        } else {
+            // Single IP
+            if let Ok(ip) = target_range.parse::<IpAddr>() {
+                targets.push(ip);
+            }
+        }
+
+        Ok(targets)
+    }
+
+    fn parse_cidr_range(&self, cidr: &str) -> Result<Vec<IpAddr>> {
+        let parts: Vec<&str> = cidr.split('/').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("Invalid CIDR notation: {}", cidr));
+        }
+
+        let base_ip: Ipv4Addr = parts[0].parse()?;
+        let prefix_len: u8 = parts[1].parse()?;
+
+        if prefix_len > 32 {
+            return Err(anyhow::anyhow!("Invalid prefix length: {}", prefix_len));
+        }
+
+        let mut targets = Vec::new();
+        let host_bits = 32 - prefix_len;
+        let num_hosts = if host_bits >= 31 { 254 } else { (1u32 << host_bits) - 2 }; // Exclude network and broadcast
+
+        let base_addr = u32::from(base_ip);
+        let network_addr = base_addr & (!((1u32 << host_bits) - 1));
+
+        for i in 1..=num_hosts.min(254) {
+            let host_addr = network_addr + i;
+            if let Ok(ip) = Ipv4Addr::try_from(host_addr) {
+                targets.push(IpAddr::V4(ip));
+            }
+        }
+
+        Ok(targets)
+    }
+
+    fn parse_ip_range(&self, range: &str) -> Result<Vec<IpAddr>> {
+        let parts: Vec<&str> = range.split('-').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("Invalid IP range: {}", range));
+        }
+
+        let start_ip: Ipv4Addr = parts[0].trim().parse()?;
+        let end_ip: Ipv4Addr = parts[1].trim().parse()?;
+
+        let start_addr = u32::from(start_ip);
+        let end_addr = u32::from(end_ip);
+
+        let mut targets = Vec::new();
+        for addr in start_addr..=end_addr {
+            if let Ok(ip) = Ipv4Addr::try_from(addr) {
+                targets.push(IpAddr::V4(ip));
+            }
+        }
+
+        Ok(targets)
+    }
+
+    fn resolve_hostname(ip: IpAddr) -> Option<String> {
+        // Simple hostname resolution
+        match (ip, 0).to_socket_addrs() {
+            Ok(mut addrs) => {
+                if let Some(_) = addrs.next() {
+                    // In a real implementation, you'd do reverse DNS lookup
+                    None // Simplified - not implementing reverse DNS
+                }
+                else { None }
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn count_scanned_ports(&self, hosts: &[ScannedHost]) -> usize {
+        hosts.iter().map(|h| h.open_ports.len()).sum()
+    }
+
+    fn count_identified_services(&self, hosts: &[ScannedHost]) -> usize {
+        hosts.iter()
+            .map(|h| h.open_ports.iter().filter(|p| p.service.is_some()).count())
+            .sum()
+    }
+
+    pub fn convert_to_components(&self) -> Vec<Component> {
+        let mut components = Vec::new();
+
+        for host in &self.discovered_hosts {
+            // Create host component
+            let mut host_metadata = serde_json::Map::new();
+            host_metadata.insert("ip_address".to_string(), serde_json::Value::String(host.ip_address.to_string()));
+
+            if let Some(hostname) = &host.hostname {
+                host_metadata.insert("hostname".to_string(), serde_json::Value::String(hostname.clone()));
+            }
+
+            if let Some(mac) = &host.mac_address {
+                host_metadata.insert("mac_address".to_string(), serde_json::Value::String(mac.clone()));
+            }
+
+            host_metadata.insert("tcp_responsive".to_string(), serde_json::Value::Bool(host.responsive));
+            host_metadata.insert("icmp_responsive".to_string(), serde_json::Value::Bool(host.icmp_responsive));
+            host_metadata.insert("scan_time".to_string(), serde_json::Value::String(host.scan_time.to_rfc3339()));
+            
+            // Add analysis-friendly fields
+            let overall_responsive = host.responsive || host.icmp_responsive;
+            host_metadata.insert("overall_responsive".to_string(), serde_json::Value::Bool(overall_responsive));
+            
+            // Categorize host responsiveness for analysis
+            let responsiveness_category = if host.responsive && host.icmp_responsive {
+                "fully_responsive"
+            } else if host.responsive && !host.icmp_responsive {
+                "tcp_only_responsive"
+            } else if !host.responsive && host.icmp_responsive {
+                "icmp_only_responsive"
+            } else {
+                "completely_unresponsive"
+            };
+            host_metadata.insert("responsiveness_category".to_string(), 
+                serde_json::Value::String(responsiveness_category.to_string()));
+            
+            // Add port count for analysis
+            host_metadata.insert("open_port_count".to_string(), 
+                serde_json::Value::Number(serde_json::Number::from(host.open_ports.len())));
+
+            if let Some(os) = &host.operating_system {
+                host_metadata.insert("operating_system".to_string(), serde_json::Value::String(os.os_name.clone()));
+                host_metadata.insert("os_family".to_string(), serde_json::Value::String(os.os_family.clone()));
+                host_metadata.insert("os_confidence".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(os.confidence).unwrap()));
+            }
+
+            let host_component = Component::with_full_details(
+                host.ip_address.to_string(),
+                ComponentType::Host,
+                host.hostname.clone().unwrap_or_else(|| host.ip_address.to_string()),
+                None,
+                serde_json::Value::Object(host_metadata),
+            );
+
+            components.push(host_component);
+
+            // Create service components for each open port
+            for port in &host.open_ports {
+                if let Some(service) = &port.service {
+                    let mut service_metadata = serde_json::Map::new();
+                    service_metadata.insert("port".to_string(), serde_json::Value::Number(serde_json::Number::from(port.port)));
+                    service_metadata.insert("protocol".to_string(), serde_json::Value::String(format!("{:?}", port.protocol)));
+                    service_metadata.insert("state".to_string(), serde_json::Value::String(format!("{:?}", port.state)));
+                    service_metadata.insert("host_ip".to_string(), serde_json::Value::String(host.ip_address.to_string()));
+
+                    if let Some(version) = &service.version {
+                        service_metadata.insert("version".to_string(), serde_json::Value::String(version.clone()));
+                    }
+
+                    if let Some(product) = &service.product {
+                        service_metadata.insert("product".to_string(), serde_json::Value::String(product.clone()));
+                    }
+
+                    service_metadata.insert("confidence".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(service.confidence).unwrap()));
+
+                    if let Some(banner) = &port.banner {
+                        service_metadata.insert("banner".to_string(), serde_json::Value::String(banner.clone()));
+                    }
+
+                    let service_name = if service.name == "unknown" {
+                        format!("service-{}", port.port)
+                    } else {
+                        service.name.clone()
+                    };
+
+                    let service_component = Component::with_full_details(
+                        format!("{}:{}", host.ip_address, port.port),
+                        ComponentType::Process, // Services run as processes
+                        service_name,
+                        None,
+                        serde_json::Value::Object(service_metadata),
+                    );
+
+                    components.push(service_component);
+                }
+            }
+        }
+
+        components
+    }
+}
+
+impl Default for NetworkScanner {
+    fn default() -> Self {
+        let default_config = ScanConfig {
+            target_ranges: vec!["192.168.1.0/24".to_string()],
+            port_ranges: vec![
+                PortRange { start_port: 1, end_port: 1000 },
+            ],
+            scan_type: ScanType::TcpConnect,
+            timeout_ms: 200, // 200ms default timeout for faster scans
+            max_threads: 50,
+            tcp_scan: true,
+            icmp_scan: true,
+            service_detection: true,
+            aggressive_scan: false,
+        };
+
+        Self::new(default_config)
     }
 }

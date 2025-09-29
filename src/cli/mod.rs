@@ -4,6 +4,7 @@ pub mod visualize;
 pub mod dynamic_analysis;
 pub mod network_analysis;
 pub mod ml_analysis;
+pub mod scan;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -163,5 +164,48 @@ pub enum Commands {
         #[arg(long, default_value = "0.5")]
         #[arg(help = "Minimum confidence threshold for predictions")]
         confidence_threshold: f64,
+    },
+
+    #[command(about = "Network scanning and service discovery")]
+    Scan {
+        #[arg(short, long)]
+        #[arg(help = "Target IP range to scan (CIDR, range, or single IP)")]
+        target: String,
+
+        #[arg(long, default_value = "1-1000")]
+        #[arg(help = "Port range to scan (e.g., 1-1000, 80,443,22)")]
+        ports: String,
+
+        #[arg(long, default_value = "tcp-connect")]
+        #[arg(help = "Scan type: tcp-connect, icmp-ping, comprehensive, service-discovery")]
+        scan_type: String,
+
+        #[arg(long, default_value = "1000")]
+        #[arg(help = "Timeout per connection in milliseconds")]
+        timeout: u64,
+
+        #[arg(long, default_value = "50")]
+        #[arg(help = "Maximum concurrent threads")]
+        threads: usize,
+
+        #[arg(long)]
+        #[arg(help = "Enable service version detection")]
+        service_detection: bool,
+
+        #[arg(long)]
+        #[arg(help = "Enable aggressive scanning (OS detection, etc.)")]
+        aggressive: bool,
+
+        #[arg(long)]
+        #[arg(help = "Export scan results to file")]
+        export: Option<PathBuf>,
+
+        #[arg(long)]
+        #[arg(help = "Save discovered hosts to database")]
+        save_to_db: bool,
+
+        #[arg(long)]
+        #[arg(help = "Show detailed scan results")]
+        verbose_output: bool,
     },
 }

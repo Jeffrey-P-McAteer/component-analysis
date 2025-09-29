@@ -68,6 +68,31 @@ impl Component {
         }
     }
 
+    pub fn with_full_details(
+        id: String,
+        component_type: ComponentType,
+        name: String,
+        path: Option<String>,
+        metadata: serde_json::Value,
+    ) -> Self {
+        let metadata_map = match metadata {
+            serde_json::Value::Object(map) => map.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        
+        let now = chrono::Utc::now();
+        Self {
+            id,
+            component_type,
+            name,
+            path,
+            hash: None,
+            metadata: metadata_map,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     pub fn with_path(mut self, path: String) -> Self {
         self.path = Some(path);
         self
@@ -92,6 +117,9 @@ pub enum RelationshipType {
     ConnectsTo,
     DependsOn,
     Executes,
+    Reads,
+    Writes,
+    Uses,
 }
 
 impl std::fmt::Display for RelationshipType {
@@ -103,6 +131,9 @@ impl std::fmt::Display for RelationshipType {
             RelationshipType::ConnectsTo => write!(f, "connects_to"),
             RelationshipType::DependsOn => write!(f, "depends_on"),
             RelationshipType::Executes => write!(f, "executes"),
+            RelationshipType::Reads => write!(f, "reads"),
+            RelationshipType::Writes => write!(f, "writes"),
+            RelationshipType::Uses => write!(f, "uses"),
         }
     }
 }
@@ -118,6 +149,9 @@ impl std::str::FromStr for RelationshipType {
             "connects_to" => Ok(RelationshipType::ConnectsTo),
             "depends_on" => Ok(RelationshipType::DependsOn),
             "executes" => Ok(RelationshipType::Executes),
+            "reads" => Ok(RelationshipType::Reads),
+            "writes" => Ok(RelationshipType::Writes),
+            "uses" => Ok(RelationshipType::Uses),
             _ => Err(anyhow::anyhow!("Unknown relationship type: {}", s)),
         }
     }
@@ -138,13 +172,19 @@ impl Relationship {
         source_id: String,
         target_id: String,
         relationship_type: RelationshipType,
+        metadata: serde_json::Value,
     ) -> Self {
+        let metadata_map = match metadata {
+            serde_json::Value::Object(map) => map.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        
         Self {
             id: Uuid::new_v4().to_string(),
             source_id,
             target_id,
             relationship_type,
-            metadata: HashMap::new(),
+            metadata: metadata_map,
             created_at: chrono::Utc::now(),
         }
     }

@@ -149,5 +149,33 @@ fn main() -> Result<()> {
                 *confidence_threshold,
             )
         }
+
+        Commands::Scan {
+            target,
+            ports,
+            scan_type,
+            timeout,
+            threads,
+            service_detection,
+            aggressive,
+            export,
+            save_to_db,
+            verbose_output,
+        } => {
+            info!("Network scanning command");
+            cli::scan::run(
+                &cli.analysis_data,
+                target,
+                ports,
+                scan_type,
+                *timeout,
+                *threads,
+                *service_detection,
+                *aggressive,
+                export.as_deref(),
+                *save_to_db,
+                *verbose_output,
+            )
+        }
     }
 }

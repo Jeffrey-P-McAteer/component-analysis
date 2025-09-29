@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <unistd.h>
-#include <sys/socket.h>
 
 void test_function() {
     printf("Test function called\n");

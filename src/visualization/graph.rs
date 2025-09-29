@@ -24,6 +24,17 @@ pub struct GraphEdge {
     pub from_pos: Pos2,
     pub to_pos: Pos2,
     pub selected: bool,
+    pub edge_type: EdgeType,
+    pub visible: bool,
+}
+
+#[cfg(feature = "gui")]
+#[derive(Debug, Clone, PartialEq)]
+pub enum EdgeType {
+    Normal,
+    ReadPath,
+    WritePath,
+    BidirectionalPath,
 }
 
 #[cfg(feature = "gui")]
@@ -35,6 +46,10 @@ pub struct ComponentGraph {
     pub zoom: f32,
     pub pan_offset: Vec2,
     pub selection: HashSet<String>,
+    pub path_visualization_mode: bool,
+    pub highlighted_component: Option<String>,
+    pub read_paths: Vec<Vec<String>>,
+    pub write_paths: Vec<Vec<String>>,
 }
 
 #[cfg(feature = "gui")]
@@ -57,6 +72,10 @@ impl ComponentGraph {
             zoom: 1.0,
             pan_offset: Vec2::ZERO,
             selection: HashSet::new(),
+            path_visualization_mode: false,
+            highlighted_component: None,
+            read_paths: Vec::new(),
+            write_paths: Vec::new(),
         }
     }
 
@@ -82,6 +101,8 @@ impl ComponentGraph {
                 from_pos: from_node.position,
                 to_pos: to_node.position,
                 selected: false,
+                edge_type: EdgeType::Normal,
+                visible: true,
                 relationship,
             };
             self.edges.push(edge);
@@ -330,23 +351,35 @@ impl ComponentGraph {
             )
         }).collect();
 
-        let edge_data: Vec<_> = self.edges.iter().map(|edge| {
-            let from = self.transform_position(edge.from_pos);
-            let to = self.transform_position(edge.to_pos);
-            let color = if edge.selected {
-                Color32::from_rgb(255, 100, 100)
-            } else {
-                Color32::from_rgb(100, 100, 100)
-            };
-            (from, to, color)
-        }).collect();
+        let edge_data: Vec<_> = self.edges.iter()
+            .filter(|edge| edge.visible)
+            .map(|edge| {
+                let from = self.transform_position(edge.from_pos);
+                let to = self.transform_position(edge.to_pos);
+                let color = if edge.selected {
+                    Color32::from_rgb(255, 100, 100)
+                } else {
+                    match edge.edge_type {
+                        EdgeType::ReadPath => Color32::from_rgb(50, 150, 255), // Blue for read paths
+                        EdgeType::WritePath => Color32::from_rgb(255, 200, 50), // Yellow for write paths
+                        EdgeType::BidirectionalPath => Color32::from_rgb(150, 255, 150), // Green for bidirectional
+                        EdgeType::Normal => Color32::from_rgb(100, 100, 100), // Gray for normal
+                    }
+                };
+                (from, to, color, edge.edge_type.clone())
+            }).collect();
 
         // Draw everything
         let painter = ui.painter();
         
         // Draw edges
-        for (from, to, color) in edge_data {
-            painter.arrow(from, to - from, Stroke::new(2.0, color));
+        for (from, to, color, edge_type) in edge_data {
+            let stroke_width = match edge_type {
+                EdgeType::ReadPath | EdgeType::WritePath => 3.0, // Thicker for highlighted paths
+                EdgeType::BidirectionalPath => 4.0,
+                EdgeType::Normal => 2.0,
+            };
+            painter.arrow(from, to - from, Stroke::new(stroke_width, color));
         }
         
         // Draw nodes first
@@ -387,12 +420,18 @@ impl ComponentGraph {
                 node.hovered = is_hovered;
                 
                 if was_clicked {
-                    if self.selection.contains(&node.id) {
-                        self.selection.remove(&node.id);
-                        node.selected = false;
+                    if self.path_visualization_mode && self.highlighted_component.as_ref() == Some(&node_id) {
+                        // If clicking on the same highlighted component, clear path visualization
+                        self.clear_path_visualization();
                     } else {
-                        self.selection.insert(node.id.clone());
-                        node.selected = true;
+                        // Normal selection behavior
+                        if self.selection.contains(&node.id) {
+                            self.selection.remove(&node.id);
+                            node.selected = false;
+                        } else {
+                            self.selection.insert(node.id.clone());
+                            node.selected = true;
+                        }
                     }
                 }
             }
@@ -426,6 +465,210 @@ impl ComponentGraph {
             .filter_map(|id| self.nodes.get(id))
             .map(|node| &node.component)
             .collect()
+    }
+
+    pub fn highlight_component_paths(&mut self, component_id: &str, relationships: &[Relationship]) {
+        self.path_visualization_mode = true;
+        self.highlighted_component = Some(component_id.to_string());
+        
+        // Reset all edges to normal and invisible
+        for edge in &mut self.edges {
+            edge.edge_type = EdgeType::Normal;
+            edge.visible = false;
+        }
+        
+        // Find read and write paths
+        self.read_paths = self.find_read_paths(component_id, relationships);
+        self.write_paths = self.find_write_paths(component_id, relationships);
+        
+        // Highlight read paths in blue
+        let read_paths = self.read_paths.clone();
+        for path in &read_paths {
+            self.highlight_path(path, EdgeType::ReadPath);
+        }
+        
+        // Highlight write paths in yellow
+        let write_paths = self.write_paths.clone();
+        for path in &write_paths {
+            self.highlight_path(path, EdgeType::WritePath);
+        }
+        
+        // Make sure the highlighted component is visible
+        if let Some(node) = self.nodes.get_mut(component_id) {
+            node.selected = true;
+        }
+    }
+
+    pub fn clear_path_visualization(&mut self) {
+        self.path_visualization_mode = false;
+        self.highlighted_component = None;
+        self.read_paths.clear();
+        self.write_paths.clear();
+        
+        // Reset all edges to normal and visible
+        for edge in &mut self.edges {
+            edge.edge_type = EdgeType::Normal;
+            edge.visible = true;
+        }
+        
+        // Clear node selections
+        for node in self.nodes.values_mut() {
+            node.selected = false;
+        }
+        self.selection.clear();
+    }
+
+    fn find_read_paths(&self, component_id: &str, relationships: &[Relationship]) -> Vec<Vec<String>> {
+        let mut read_paths = Vec::new();
+        
+        // Find relationships where the component reads from other components
+        let read_relationships: Vec<&Relationship> = relationships.iter()
+            .filter(|rel| {
+                rel.target_id == component_id && 
+                (rel.relationship_type == crate::types::RelationshipType::Reads ||
+                 rel.relationship_type == crate::types::RelationshipType::Uses ||
+                 rel.relationship_type == crate::types::RelationshipType::Imports)
+            })
+            .collect();
+        
+        for rel in read_relationships {
+            // Simple path: source -> target (component)
+            let path = vec![rel.source_id.clone(), rel.target_id.clone()];
+            read_paths.push(path);
+            
+            // Look for longer paths (recursive read dependencies)
+            let extended_paths = self.find_extended_read_paths(&rel.source_id, component_id, relationships, 3);
+            read_paths.extend(extended_paths);
+        }
+        
+        read_paths
+    }
+
+    fn find_write_paths(&self, component_id: &str, relationships: &[Relationship]) -> Vec<Vec<String>> {
+        let mut write_paths = Vec::new();
+        
+        // Find relationships where the component writes to other components
+        let write_relationships: Vec<&Relationship> = relationships.iter()
+            .filter(|rel| {
+                rel.source_id == component_id && 
+                (rel.relationship_type == crate::types::RelationshipType::Writes ||
+                 rel.relationship_type == crate::types::RelationshipType::Calls ||
+                 rel.relationship_type == crate::types::RelationshipType::Contains)
+            })
+            .collect();
+        
+        for rel in write_relationships {
+            // Simple path: component -> target
+            let path = vec![rel.source_id.clone(), rel.target_id.clone()];
+            write_paths.push(path);
+            
+            // Look for longer paths (cascading write effects)
+            let extended_paths = self.find_extended_write_paths(component_id, &rel.target_id, relationships, 3);
+            write_paths.extend(extended_paths);
+        }
+        
+        write_paths
+    }
+
+    fn find_extended_read_paths(
+        &self,
+        current_id: &str,
+        target_id: &str,
+        relationships: &[Relationship],
+        max_depth: usize,
+    ) -> Vec<Vec<String>> {
+        if max_depth == 0 {
+            return Vec::new();
+        }
+        
+        let mut extended_paths = Vec::new();
+        
+        // Find what the current component reads from
+        let upstream_relationships: Vec<&Relationship> = relationships.iter()
+            .filter(|rel| {
+                rel.target_id == current_id && 
+                rel.source_id != target_id && // Avoid cycles back to original component
+                (rel.relationship_type == crate::types::RelationshipType::Reads ||
+                 rel.relationship_type == crate::types::RelationshipType::Uses ||
+                 rel.relationship_type == crate::types::RelationshipType::Imports)
+            })
+            .collect();
+        
+        for rel in upstream_relationships {
+            let mut path = vec![rel.source_id.clone(), current_id.to_string(), target_id.to_string()];
+            extended_paths.push(path);
+            
+            // Recurse for deeper paths
+            let deeper_paths = self.find_extended_read_paths(&rel.source_id, target_id, relationships, max_depth - 1);
+            for mut deeper_path in deeper_paths {
+                deeper_path.push(current_id.to_string());
+                deeper_path.push(target_id.to_string());
+                extended_paths.push(deeper_path);
+            }
+        }
+        
+        extended_paths
+    }
+
+    fn find_extended_write_paths(
+        &self,
+        source_id: &str,
+        current_id: &str,
+        relationships: &[Relationship],
+        max_depth: usize,
+    ) -> Vec<Vec<String>> {
+        if max_depth == 0 {
+            return Vec::new();
+        }
+        
+        let mut extended_paths = Vec::new();
+        
+        // Find what the current component writes to
+        let downstream_relationships: Vec<&Relationship> = relationships.iter()
+            .filter(|rel| {
+                rel.source_id == current_id && 
+                rel.target_id != source_id && // Avoid cycles back to original component
+                (rel.relationship_type == crate::types::RelationshipType::Writes ||
+                 rel.relationship_type == crate::types::RelationshipType::Calls ||
+                 rel.relationship_type == crate::types::RelationshipType::Contains)
+            })
+            .collect();
+        
+        for rel in downstream_relationships {
+            let mut path = vec![source_id.to_string(), current_id.to_string(), rel.target_id.clone()];
+            extended_paths.push(path);
+            
+            // Recurse for deeper paths
+            let deeper_paths = self.find_extended_write_paths(source_id, &rel.target_id, relationships, max_depth - 1);
+            for mut deeper_path in deeper_paths {
+                let mut full_path = vec![source_id.to_string(), current_id.to_string()];
+                full_path.extend(deeper_path.into_iter().skip(1)); // Skip duplicate source_id
+                extended_paths.push(full_path);
+            }
+        }
+        
+        extended_paths
+    }
+
+    fn highlight_path(&mut self, path: &[String], edge_type: EdgeType) {
+        if path.len() < 2 {
+            return;
+        }
+        
+        for i in 0..path.len() - 1 {
+            let source_id = &path[i];
+            let target_id = &path[i + 1];
+            
+            // Find the edge and update its type and visibility
+            for edge in &mut self.edges {
+                if (edge.relationship.source_id == *source_id && edge.relationship.target_id == *target_id) ||
+                   (edge.relationship.source_id == *target_id && edge.relationship.target_id == *source_id) {
+                    edge.edge_type = edge_type.clone();
+                    edge.visible = true;
+                    break;
+                }
+            }
+        }
     }
 }
 

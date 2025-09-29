@@ -208,6 +208,34 @@ impl AnalyzerApp {
         self.detail_view.render(ui);
     }
 
+    fn show_component_paths(&mut self, component_id: &str) -> anyhow::Result<()> {
+        // Load relationships for path analysis
+        let db = open_database(&self.db_path)?;
+        let conn = db.connection();
+        
+        // Get all relationships (both incoming and outgoing) for the component
+        let mut all_relationships = RelationshipQueries::get_by_source(conn, component_id)?;
+        let incoming_relationships = RelationshipQueries::get_by_target(conn, component_id)?;
+        all_relationships.extend(incoming_relationships);
+        
+        // Also get relationships for other components to build complete paths
+        for component in &self.components {
+            if component.id != component_id {
+                let component_relationships = RelationshipQueries::get_by_source(conn, &component.id)?;
+                all_relationships.extend(component_relationships);
+            }
+        }
+        
+        // Remove duplicates
+        all_relationships.sort_by(|a, b| a.id.cmp(&b.id));
+        all_relationships.dedup_by(|a, b| a.id == b.id);
+        
+        // Highlight paths in the graph
+        self.graph.highlight_component_paths(component_id, &all_relationships);
+        
+        Ok(())
+    }
+
     fn show_graph_view(&mut self, ui: &mut Ui) {
         // Graph controls
         ui.horizontal(|ui| {
@@ -230,6 +258,31 @@ impl AnalyzerApp {
             if ui.button("Clear Selection").clicked() {
                 self.graph.clear_selection();
                 self.selected_component = None;
+            }
+            
+            ui.separator();
+            
+            // Path visualization controls
+            if let Some(selected_id) = self.selected_component.clone() {
+                if ui.button("Show Paths").clicked() {
+                    if let Err(e) = self.show_component_paths(&selected_id) {
+                        self.error_message = Some(format!("Failed to show paths: {}", e));
+                    }
+                }
+            }
+            
+            if self.graph.path_visualization_mode {
+                if ui.button("Clear Paths").clicked() {
+                    self.graph.clear_path_visualization();
+                }
+                
+                // Show path legend
+                ui.separator();
+                ui.label("Legend:");
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(50, 150, 255), "● Read Paths");
+                    ui.colored_label(egui::Color32::from_rgb(255, 200, 50), "● Write Paths");
+                });
             }
         });
 

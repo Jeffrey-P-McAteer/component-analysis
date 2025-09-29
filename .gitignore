@@ -2,11 +2,15 @@
 # Added by cargo
 /target
 
+/build
+
 # Analysis and test files
 *.db
 *.sqlite
 analysis.db
-test_binary*
+test_binary
+test_binary.exe
+test_binary.dll
 *.elf
 *.exe
 *.so
@@ -17,8 +21,6 @@ test_binary*
 *.lib
 
 # Test artifacts
-test.c
-test_*
 sample_*
 
 # Temporary analysis files
