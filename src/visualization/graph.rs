@@ -3,7 +3,7 @@ use crate::types::{Component, Relationship, ComponentType};
 #[cfg(feature = "gui")]
 use egui::{Context, Ui, Pos2, Vec2, Rect, Color32, Stroke, Rounding};
 #[cfg(feature = "gui")]
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeMap};
 
 #[cfg(feature = "gui")]
 #[derive(Debug, Clone)]
@@ -14,6 +14,7 @@ pub struct GraphNode {
     pub size: Vec2,
     pub selected: bool,
     pub hovered: bool,
+    pub dragging: bool,
 }
 
 #[cfg(feature = "gui")]
@@ -39,7 +40,7 @@ pub enum EdgeType {
 
 #[cfg(feature = "gui")]
 pub struct ComponentGraph {
-    pub nodes: HashMap<String, GraphNode>,
+    pub nodes: BTreeMap<String, GraphNode>,
     pub edges: Vec<GraphEdge>,
     pub layout: GraphLayout,
     pub viewport: Rect,
@@ -50,6 +51,9 @@ pub struct ComponentGraph {
     pub highlighted_component: Option<String>,
     pub read_paths: Vec<Vec<String>>,
     pub write_paths: Vec<Vec<String>>,
+    pub dragging_node: Option<String>,
+    pub drag_start_pos: Option<Pos2>,
+    pub show_all_connections: bool,
 }
 
 #[cfg(feature = "gui")]
@@ -65,7 +69,7 @@ pub enum GraphLayout {
 impl ComponentGraph {
     pub fn new() -> Self {
         Self {
-            nodes: HashMap::new(),
+            nodes: BTreeMap::new(),
             edges: Vec::new(),
             layout: GraphLayout::Force,
             viewport: Rect::NOTHING,
@@ -76,6 +80,9 @@ impl ComponentGraph {
             highlighted_component: None,
             read_paths: Vec::new(),
             write_paths: Vec::new(),
+            dragging_node: None,
+            drag_start_pos: None,
+            show_all_connections: true,
         }
     }
 
@@ -86,6 +93,7 @@ impl ComponentGraph {
             size: Self::calculate_node_size(&component),
             selected: false,
             hovered: false,
+            dragging: false,
             component,
         };
         self.nodes.insert(node.id.clone(), node);
@@ -154,8 +162,9 @@ impl ComponentGraph {
     fn apply_forces(&mut self) {
         let mut forces: HashMap<String, Vec2> = HashMap::new();
         
-        // Repulsion forces between nodes
-        let nodes: Vec<_> = self.nodes.values().collect();
+        // Repulsion forces between nodes (sorted for stable behavior)
+        let mut nodes: Vec<_> = self.nodes.values().collect();
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
         for (i, node1) in nodes.iter().enumerate() {
             let mut force = Vec2::ZERO;
             
@@ -186,8 +195,11 @@ impl ComponentGraph {
             }
         }
 
-        // Apply forces with damping
-        for (id, force) in forces {
+        // Apply forces with damping (sorted by ID for consistent application)
+        let mut sorted_forces: Vec<_> = forces.into_iter().collect();
+        sorted_forces.sort_by(|a, b| a.0.cmp(&b.0));
+        
+        for (id, force) in sorted_forces {
             if let Some(node) = self.nodes.get_mut(&id) {
                 node.position += force * 0.1; // Damping factor
             }
@@ -331,12 +343,46 @@ impl ComponentGraph {
         let response = ui.allocate_response(available_rect.size(), egui::Sense::click_and_drag());
 
         // Handle pan and zoom
-        if response.dragged() {
-            self.pan_offset += response.drag_delta() / self.zoom;
+        if response.dragged() && !ui.input(|i| i.modifiers.ctrl) {
+            let new_pan = self.pan_offset + response.drag_delta() / self.zoom;
+            // Limit pan to reasonable bounds
+            self.pan_offset = Vec2::new(
+                new_pan.x.clamp(-2000.0, 2000.0),
+                new_pan.y.clamp(-2000.0, 2000.0),
+            );
+        }
+        
+        // Handle zoom with mouse wheel
+        ui.input(|i| {
+            let scroll_delta = i.raw_scroll_delta.y;
+            if scroll_delta != 0.0 {
+                let zoom_factor = 1.0 + scroll_delta * 0.001;
+                let new_zoom = (self.zoom * zoom_factor).clamp(0.1, 5.0);
+                
+                // Zoom towards mouse position
+                if let Some(pointer_pos) = i.pointer.hover_pos() {
+                    let local_pos = pointer_pos - self.viewport.min;
+                    let world_pos = (local_pos - self.pan_offset * self.zoom) / self.zoom;
+                    
+                    self.zoom = new_zoom;
+                    self.pan_offset = (local_pos - world_pos * self.zoom) / self.zoom;
+                } else {
+                    self.zoom = new_zoom;
+                }
+            }
+        });
+        
+        // Handle reset zoom/pan with double-click
+        if response.double_clicked() {
+            self.zoom = 1.0;
+            self.pan_offset = Vec2::ZERO;
         }
 
-        // Collect node data and drawing info
-        let node_data: Vec<_> = self.nodes.values().map(|node| {
+        // Collect node data and drawing info (sorted by ID for stable ordering)
+        let mut sorted_nodes: Vec<_> = self.nodes.values().collect();
+        sorted_nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        
+        let node_data: Vec<_> = sorted_nodes.iter().map(|node| {
             let pos = self.transform_position(node.position);
             let size = node.size * self.zoom;
             let rect = Rect::from_min_size(pos, size);
@@ -346,13 +392,20 @@ impl ComponentGraph {
                 rect,
                 node.selected,
                 node.hovered,
+                node.dragging,
                 node.component.component_type.clone(),
                 node.component.name.clone(),
             )
         }).collect();
 
-        let edge_data: Vec<_> = self.edges.iter()
+        // Sort edges by ID for stable ordering
+        let mut sorted_edges: Vec<_> = self.edges.iter()
             .filter(|edge| edge.visible)
+            .collect();
+        sorted_edges.sort_by(|a, b| a.id.cmp(&b.id));
+        
+        let edge_data: Vec<_> = sorted_edges.iter()
+            .filter(|edge| self.show_all_connections || edge.visible)
             .map(|edge| {
                 let from = self.transform_position(edge.from_pos);
                 let to = self.transform_position(edge.to_pos);
@@ -383,18 +436,28 @@ impl ComponentGraph {
         }
         
         // Draw nodes first
-        for (_, rect, selected, hovered, component_type, name) in &node_data {
-            let color = self.get_node_color(component_type);
-            let stroke_color = if *selected {
+        for (_, rect, selected, hovered, dragging, component_type, name) in &node_data {
+            let mut color = self.get_node_color(component_type);
+            
+            // Slightly transparent when dragging
+            if *dragging {
+                color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 200);
+            }
+            
+            let stroke_color = if *dragging {
+                Color32::from_rgb(255, 100, 100)  // Red when dragging
+            } else if *selected {
                 Color32::from_rgb(255, 200, 0)
             } else if *hovered {
                 Color32::from_rgb(200, 200, 200)
             } else {
                 Color32::from_rgb(100, 100, 100)
             };
+            
+            let stroke_width = if *dragging { 3.0 } else { 2.0 };
 
             // Draw node
-            painter.rect(*rect, Rounding::same(5.0), color, Stroke::new(2.0, stroke_color));
+            painter.rect(*rect, Rounding::same(5.0), color, Stroke::new(stroke_width, stroke_color));
 
             // Draw text
             let text_pos = rect.center();
@@ -409,17 +472,42 @@ impl ComponentGraph {
 
         // Now handle interactions separately
         let mut node_interactions = Vec::new();
-        for (node_id, rect, _, _, _, _) in node_data {
-            let node_response = ui.allocate_rect(rect, egui::Sense::click());
-            node_interactions.push((node_id, node_response.hovered(), node_response.clicked()));
+        for (node_id, rect, _, _, _, _, _) in node_data {
+            let node_response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+            node_interactions.push((node_id, node_response.hovered(), node_response.clicked(), 
+                                  node_response.drag_started(), node_response.dragged(), 
+                                  node_response.drag_stopped(), node_response.drag_delta()));
         }
         
         // Apply interactions
-        for (node_id, is_hovered, was_clicked) in node_interactions {
+        let mut needs_edge_update = false;
+        
+        for (node_id, is_hovered, was_clicked, drag_started, is_dragging, drag_released, drag_delta) in node_interactions {
             if let Some(node) = self.nodes.get_mut(&node_id) {
                 node.hovered = is_hovered;
                 
-                if was_clicked {
+                // Handle drag start
+                if drag_started {
+                    self.dragging_node = Some(node_id.clone());
+                    self.drag_start_pos = Some(node.position);
+                    node.dragging = true;
+                }
+                
+                // Handle dragging
+                if is_dragging && self.dragging_node.as_ref() == Some(&node_id) {
+                    node.position += drag_delta / self.zoom;
+                    needs_edge_update = true;
+                }
+                
+                // Handle drag end
+                if drag_released && self.dragging_node.as_ref() == Some(&node_id) {
+                    self.dragging_node = None;
+                    self.drag_start_pos = None;
+                    node.dragging = false;
+                }
+                
+                // Only handle clicks if not dragging
+                if was_clicked && !node.dragging {
                     if self.path_visualization_mode && self.highlighted_component.as_ref() == Some(&node_id) {
                         // If clicking on the same highlighted component, clear path visualization
                         self.clear_path_visualization();
@@ -435,6 +523,11 @@ impl ComponentGraph {
                     }
                 }
             }
+        }
+        
+        // Update edge positions after all interactions are processed
+        if needs_edge_update {
+            self.update_edge_positions();
         }
     }
 
@@ -456,8 +549,11 @@ impl ComponentGraph {
     pub fn clear_selection(&mut self) {
         for node in self.nodes.values_mut() {
             node.selected = false;
+            node.dragging = false;
         }
         self.selection.clear();
+        self.dragging_node = None;
+        self.drag_start_pos = None;
     }
 
     pub fn get_selected_components(&self) -> Vec<&Component> {
@@ -511,11 +607,14 @@ impl ComponentGraph {
             edge.visible = true;
         }
         
-        // Clear node selections
+        // Clear node selections and drag state
         for node in self.nodes.values_mut() {
             node.selected = false;
+            node.dragging = false;
         }
         self.selection.clear();
+        self.dragging_node = None;
+        self.drag_start_pos = None;
     }
 
     fn find_read_paths(&self, component_id: &str, relationships: &[Relationship]) -> Vec<Vec<String>> {
@@ -595,7 +694,7 @@ impl ComponentGraph {
             .collect();
         
         for rel in upstream_relationships {
-            let mut path = vec![rel.source_id.clone(), current_id.to_string(), target_id.to_string()];
+            let path = vec![rel.source_id.clone(), current_id.to_string(), target_id.to_string()];
             extended_paths.push(path);
             
             // Recurse for deeper paths
@@ -635,7 +734,7 @@ impl ComponentGraph {
             .collect();
         
         for rel in downstream_relationships {
-            let mut path = vec![source_id.to_string(), current_id.to_string(), rel.target_id.clone()];
+            let path = vec![source_id.to_string(), current_id.to_string(), rel.target_id.clone()];
             extended_paths.push(path);
             
             // Recurse for deeper paths

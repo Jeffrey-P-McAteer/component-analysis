@@ -36,6 +36,9 @@ pub struct AnalyzerApp {
     // Performance monitoring
     performance_manager: PerformanceManager,
     show_performance_panel: bool,
+    
+    // Path visualization settings
+    auto_highlight_paths: bool,
 }
 
 #[cfg(feature = "gui")]
@@ -65,6 +68,7 @@ impl AnalyzerApp {
             show_investigation_panel: false,
             performance_manager: PerformanceManager::new(),
             show_performance_panel: false,
+            auto_highlight_paths: true,
         };
         
         // Load initial data
@@ -180,7 +184,11 @@ impl AnalyzerApp {
         ui.separator();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for component in &self.components {
+            // Sort components by ID for stable ordering
+            let mut sorted_components = self.components.clone();
+            sorted_components.sort_by(|a, b| a.id.cmp(&b.id));
+            
+            for component in &sorted_components {
                 let response = ui.selectable_label(
                     self.selected_component.as_ref() == Some(&component.id),
                     format!("{} ({})", component.name, component.component_type)
@@ -255,6 +263,21 @@ impl AnalyzerApp {
             
             ui.separator();
             
+            // Zoom controls
+            ui.label(format!("Zoom: {:.1}%", self.graph.zoom * 100.0));
+            if ui.button("Zoom In").clicked() {
+                self.graph.zoom = (self.graph.zoom * 1.2).clamp(0.1, 5.0);
+            }
+            if ui.button("Zoom Out").clicked() {
+                self.graph.zoom = (self.graph.zoom / 1.2).clamp(0.1, 5.0);
+            }
+            if ui.button("Reset View").clicked() {
+                self.graph.zoom = 1.0;
+                self.graph.pan_offset = egui::Vec2::ZERO;
+            }
+            
+            ui.separator();
+            
             if ui.button("Clear Selection").clicked() {
                 self.graph.clear_selection();
                 self.selected_component = None;
@@ -262,9 +285,12 @@ impl AnalyzerApp {
             
             ui.separator();
             
-            // Path visualization controls
+            // Connection and path visualization controls
+            ui.checkbox(&mut self.graph.show_all_connections, "Show all connections");
+            ui.checkbox(&mut self.auto_highlight_paths, "Auto-highlight paths");
+            
             if let Some(selected_id) = self.selected_component.clone() {
-                if ui.button("Show Paths").clicked() {
+                if ui.button("Manual Show Paths").clicked() {
                     if let Err(e) = self.show_component_paths(&selected_id) {
                         self.error_message = Some(format!("Failed to show paths: {}", e));
                     }
@@ -291,11 +317,25 @@ impl AnalyzerApp {
         // Render graph
         self.graph.render(ui);
         
-        // Update selection from graph
+        // Update selection from graph and auto-highlight paths
         let selected_components = self.graph.get_selected_components();
         if let Some(first_selected) = selected_components.first() {
             if self.selected_component.as_ref() != Some(&first_selected.id) {
-                self.selected_component = Some(first_selected.id.clone());
+                let selected_id = first_selected.id.clone();
+                self.selected_component = Some(selected_id.clone());
+                
+                // Automatically show paths for newly selected component if enabled
+                if self.auto_highlight_paths {
+                    if let Err(e) = self.show_component_paths(&selected_id) {
+                        self.error_message = Some(format!("Failed to show paths: {}", e));
+                    }
+                }
+            }
+        } else if self.selected_component.is_some() {
+            // Clear paths when no component is selected (if auto-highlighting is enabled)
+            self.selected_component = None;
+            if self.auto_highlight_paths {
+                self.graph.clear_path_visualization();
             }
         }
     }
@@ -428,9 +468,9 @@ impl eframe::App for AnalyzerApp {
                         ui.label(format!("Total components loaded: {}", self.components.len()));
                         
                         // Component type breakdown
-                        let mut type_counts = std::collections::HashMap::new();
+                        let mut type_counts = std::collections::BTreeMap::new();
                         for component in &self.components {
-                            *type_counts.entry(&component.component_type).or_insert(0) += 1;
+                            *type_counts.entry(component.component_type.clone()).or_insert(0) += 1;
                         }
                         
                         for (comp_type, count) in type_counts {
