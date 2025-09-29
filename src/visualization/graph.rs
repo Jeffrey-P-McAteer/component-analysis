@@ -573,9 +573,12 @@ impl ComponentGraph {
             edge.visible = false;
         }
         
-        // Find read and write paths
+        // Find bidirectional read and write paths with proper arrow direction
         self.read_paths = self.find_read_paths(component_id, relationships);
         self.write_paths = self.find_write_paths(component_id, relationships);
+        
+        // Add parent-child relationships for hierarchical highlighting
+        self.add_hierarchical_paths(component_id, relationships);
         
         // Highlight read paths in blue
         let read_paths = self.read_paths.clone();
@@ -589,10 +592,8 @@ impl ComponentGraph {
             self.highlight_path(path, EdgeType::WritePath);
         }
         
-        // Make sure the highlighted component is visible
-        if let Some(node) = self.nodes.get_mut(component_id) {
-            node.selected = true;
-        }
+        // Make sure the highlighted component and related components are visible
+        self.highlight_related_components(component_id);
     }
 
     pub fn clear_path_visualization(&mut self) {
@@ -620,24 +621,18 @@ impl ComponentGraph {
     fn find_read_paths(&self, component_id: &str, relationships: &[Relationship]) -> Vec<Vec<String>> {
         let mut read_paths = Vec::new();
         
-        // Find relationships where the component reads from other components
-        let read_relationships: Vec<&Relationship> = relationships.iter()
-            .filter(|rel| {
-                rel.target_id == component_id && 
-                (rel.relationship_type == crate::types::RelationshipType::Reads ||
-                 rel.relationship_type == crate::types::RelationshipType::Uses ||
-                 rel.relationship_type == crate::types::RelationshipType::Imports)
-            })
-            .collect();
-        
-        for rel in read_relationships {
-            // Simple path: source -> target (component)
-            let path = vec![rel.source_id.clone(), rel.target_id.clone()];
-            read_paths.push(path);
+        // Find bidirectional relationships where the component is involved
+        for rel in relationships {
+            let (from_id, to_id, should_highlight) = self.determine_relationship_direction(component_id, rel);
             
-            // Look for longer paths (recursive read dependencies)
-            let extended_paths = self.find_extended_read_paths(&rel.source_id, component_id, relationships, 3);
-            read_paths.extend(extended_paths);
+            if should_highlight && self.is_read_relationship(&rel.relationship_type) {
+                let path = vec![from_id, to_id];
+                read_paths.push(path);
+                
+                // Look for extended paths
+                let extended_paths = self.find_extended_paths(component_id, relationships, true, 2);
+                read_paths.extend(extended_paths);
+            }
         }
         
         read_paths
@@ -646,24 +641,18 @@ impl ComponentGraph {
     fn find_write_paths(&self, component_id: &str, relationships: &[Relationship]) -> Vec<Vec<String>> {
         let mut write_paths = Vec::new();
         
-        // Find relationships where the component writes to other components
-        let write_relationships: Vec<&Relationship> = relationships.iter()
-            .filter(|rel| {
-                rel.source_id == component_id && 
-                (rel.relationship_type == crate::types::RelationshipType::Writes ||
-                 rel.relationship_type == crate::types::RelationshipType::Calls ||
-                 rel.relationship_type == crate::types::RelationshipType::Contains)
-            })
-            .collect();
-        
-        for rel in write_relationships {
-            // Simple path: component -> target
-            let path = vec![rel.source_id.clone(), rel.target_id.clone()];
-            write_paths.push(path);
+        // Find bidirectional relationships where the component is involved
+        for rel in relationships {
+            let (from_id, to_id, should_highlight) = self.determine_relationship_direction(component_id, rel);
             
-            // Look for longer paths (cascading write effects)
-            let extended_paths = self.find_extended_write_paths(component_id, &rel.target_id, relationships, 3);
-            write_paths.extend(extended_paths);
+            if should_highlight && self.is_write_relationship(&rel.relationship_type) {
+                let path = vec![from_id, to_id];
+                write_paths.push(path);
+                
+                // Look for extended paths
+                let extended_paths = self.find_extended_paths(component_id, relationships, false, 2);
+                write_paths.extend(extended_paths);
+            }
         }
         
         write_paths
@@ -709,11 +698,71 @@ impl ComponentGraph {
         extended_paths
     }
 
-    fn find_extended_write_paths(
+    /// Determines the proper direction for a relationship arrow based on component hierarchy
+    /// Returns (from_id, to_id, should_highlight) where arrows point from larger to smaller components
+    fn determine_relationship_direction(&self, selected_component_id: &str, rel: &Relationship) -> (String, String, bool) {
+        // Check if this relationship involves the selected component
+        let involves_selected = rel.source_id == selected_component_id || rel.target_id == selected_component_id;
+        
+        if !involves_selected {
+            return (rel.source_id.clone(), rel.target_id.clone(), false);
+        }
+        
+        // Get component types to determine hierarchy
+        let source_type = self.nodes.get(&rel.source_id)
+            .map(|n| &n.component.component_type);
+        let target_type = self.nodes.get(&rel.target_id)
+            .map(|n| &n.component.component_type);
+        
+        match (source_type, target_type) {
+            (Some(src_type), Some(tgt_type)) => {
+                // Arrows point from larger to smaller components
+                // Network > Host > Process > Binary > Function > Instruction
+                if src_type > tgt_type {
+                    // Source is larger, arrow goes source -> target
+                    (rel.source_id.clone(), rel.target_id.clone(), true)
+                } else if tgt_type > src_type {
+                    // Target is larger, reverse arrow direction: target -> source
+                    (rel.target_id.clone(), rel.source_id.clone(), true)
+                } else {
+                    // Same level, keep original direction
+                    (rel.source_id.clone(), rel.target_id.clone(), true)
+                }
+            }
+            _ => {
+                // If we can't determine types, keep original direction
+                (rel.source_id.clone(), rel.target_id.clone(), true)
+            }
+        }
+    }
+    
+    /// Classifies relationship types as read operations
+    fn is_read_relationship(&self, rel_type: &crate::types::RelationshipType) -> bool {
+        matches!(rel_type, 
+            crate::types::RelationshipType::Reads |
+            crate::types::RelationshipType::Uses |
+            crate::types::RelationshipType::Imports |
+            crate::types::RelationshipType::DependsOn
+        )
+    }
+    
+    /// Classifies relationship types as write operations
+    fn is_write_relationship(&self, rel_type: &crate::types::RelationshipType) -> bool {
+        matches!(rel_type,
+            crate::types::RelationshipType::Writes |
+            crate::types::RelationshipType::Calls |
+            crate::types::RelationshipType::Contains |
+            crate::types::RelationshipType::Executes |
+            crate::types::RelationshipType::ConnectsTo
+        )
+    }
+    
+    /// Finds extended paths in the relationship graph
+    fn find_extended_paths(
         &self,
-        source_id: &str,
-        current_id: &str,
+        component_id: &str,
         relationships: &[Relationship],
+        is_read_path: bool,
         max_depth: usize,
     ) -> Vec<Vec<String>> {
         if max_depth == 0 {
@@ -722,31 +771,112 @@ impl ComponentGraph {
         
         let mut extended_paths = Vec::new();
         
-        // Find what the current component writes to
-        let downstream_relationships: Vec<&Relationship> = relationships.iter()
-            .filter(|rel| {
-                rel.source_id == current_id && 
-                rel.target_id != source_id && // Avoid cycles back to original component
-                (rel.relationship_type == crate::types::RelationshipType::Writes ||
-                 rel.relationship_type == crate::types::RelationshipType::Calls ||
-                 rel.relationship_type == crate::types::RelationshipType::Contains)
-            })
-            .collect();
-        
-        for rel in downstream_relationships {
-            let path = vec![source_id.to_string(), current_id.to_string(), rel.target_id.clone()];
-            extended_paths.push(path);
+        // Find relationships that extend from the current component
+        for rel in relationships {
+            let (from_id, to_id, should_highlight) = self.determine_relationship_direction(component_id, rel);
             
-            // Recurse for deeper paths
-            let deeper_paths = self.find_extended_write_paths(source_id, &rel.target_id, relationships, max_depth - 1);
-            for mut deeper_path in deeper_paths {
-                let mut full_path = vec![source_id.to_string(), current_id.to_string()];
-                full_path.extend(deeper_path.into_iter().skip(1)); // Skip duplicate source_id
-                extended_paths.push(full_path);
+            if !should_highlight {
+                continue;
+            }
+            
+            let is_relevant = if is_read_path {
+                self.is_read_relationship(&rel.relationship_type)
+            } else {
+                self.is_write_relationship(&rel.relationship_type)
+            };
+            
+            if is_relevant {
+                // Only create extended paths if this creates a chain
+                let creates_chain = (rel.source_id == component_id && from_id != component_id) ||
+                                  (rel.target_id == component_id && to_id != component_id);
+                
+                if creates_chain {
+                    let path = vec![from_id.clone(), to_id.clone()];
+                    extended_paths.push(path);
+                    
+                    // Recursively find deeper connections
+                    let other_component = if from_id == component_id { &to_id } else { &from_id };
+                    let deeper_paths = self.find_extended_paths(other_component, relationships, is_read_path, max_depth - 1);
+                    
+                    for deeper_path in deeper_paths {
+                        let mut full_path = vec![from_id.clone(), to_id.clone()];
+                        full_path.extend(deeper_path.into_iter().skip(1));
+                        extended_paths.push(full_path);
+                    }
+                }
             }
         }
         
         extended_paths
+    }
+    
+    /// Adds parent-child relationships to ensure bidirectional highlighting
+    /// When a function is selected, its binary should light up, etc.
+    fn add_hierarchical_paths(&mut self, component_id: &str, relationships: &[Relationship]) {
+        let selected_component_type = self.nodes.get(component_id)
+            .map(|n| &n.component.component_type);
+            
+        if let Some(selected_type) = selected_component_type {
+            // Find all relationships that involve the selected component
+            for rel in relationships {
+                if rel.source_id == component_id || rel.target_id == component_id {
+                    let other_id = if rel.source_id == component_id {
+                        &rel.target_id
+                    } else {
+                        &rel.source_id
+                    };
+                    
+                    if let Some(other_node) = self.nodes.get(other_id) {
+                        let other_type = &other_node.component.component_type;
+                        
+                        // Determine if this is a hierarchical relationship
+                        let is_hierarchical = matches!(rel.relationship_type,
+                            crate::types::RelationshipType::Contains |
+                            crate::types::RelationshipType::DependsOn |
+                            crate::types::RelationshipType::Uses
+                        );
+                        
+                        if is_hierarchical {
+                            // Add bidirectional path with proper arrow direction
+                            let (from_id, to_id, _) = self.determine_relationship_direction(component_id, rel);
+                            let path = vec![from_id, to_id];
+                            
+                            // Classify as read or write based on relationship type and hierarchy
+                            if selected_type < other_type {
+                                // Selected component is smaller, this is a \"read\" relationship (dependency)
+                                self.read_paths.push(path);
+                            } else {
+                                // Selected component is larger, this is a \"write\" relationship (containment)
+                                self.write_paths.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Highlights the selected component and all related components in the visualization
+    fn highlight_related_components(&mut self, component_id: &str) {
+        // Highlight the main selected component
+        if let Some(node) = self.nodes.get_mut(component_id) {
+            node.selected = true;
+        }
+        
+        // Highlight all components that appear in the paths
+        let all_component_ids: std::collections::HashSet<String> = self.read_paths
+            .iter()
+            .chain(self.write_paths.iter())
+            .flat_map(|path| path.iter())
+            .cloned()
+            .collect();
+            
+        for comp_id in all_component_ids {
+            if let Some(node) = self.nodes.get_mut(&comp_id) {
+                node.selected = true;
+                self.selection.insert(comp_id);
+            }
+        }
     }
 
     fn highlight_path(&mut self, path: &[String], edge_type: EdgeType) {
@@ -755,15 +885,28 @@ impl ComponentGraph {
         }
         
         for i in 0..path.len() - 1 {
-            let source_id = &path[i];
-            let target_id = &path[i + 1];
+            let from_id = &path[i];
+            let to_id = &path[i + 1];
             
-            // Find the edge and update its type and visibility
+            // Find the edge that represents this relationship
+            // We need to check both directions since our path may have reordered the relationship
             for edge in &mut self.edges {
-                if (edge.relationship.source_id == *source_id && edge.relationship.target_id == *target_id) ||
-                   (edge.relationship.source_id == *target_id && edge.relationship.target_id == *source_id) {
+                let edge_matches = (edge.relationship.source_id == *from_id && edge.relationship.target_id == *to_id) ||
+                                 (edge.relationship.source_id == *to_id && edge.relationship.target_id == *from_id);
+                
+                if edge_matches {
                     edge.edge_type = edge_type.clone();
                     edge.visible = true;
+                    
+                    // Update edge visual direction based on path direction
+                    // This ensures arrows point in the direction specified by our hierarchy-aware path
+                    edge.from_pos = self.nodes.get(from_id)
+                        .map(|n| n.position + n.size * 0.5)
+                        .unwrap_or(edge.from_pos);
+                    edge.to_pos = self.nodes.get(to_id)
+                        .map(|n| n.position + n.size * 0.5)
+                        .unwrap_or(edge.to_pos);
+                    
                     break;
                 }
             }

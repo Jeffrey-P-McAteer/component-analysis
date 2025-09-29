@@ -289,6 +289,11 @@ impl AnalyzerApp {
             ui.checkbox(&mut self.graph.show_all_connections, "Show all connections");
             ui.checkbox(&mut self.auto_highlight_paths, "Auto-highlight paths");
             
+            if self.graph.path_visualization_mode {
+                ui.separator();
+                ui.label("📊 Path highlighting active");
+            }
+            
             if let Some(selected_id) = self.selected_component.clone() {
                 if ui.button("Manual Show Paths").clicked() {
                     if let Err(e) = self.show_component_paths(&selected_id) {
