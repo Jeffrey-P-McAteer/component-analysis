@@ -1,10 +1,10 @@
-use crate::types::{Component, AnalysisResult, AnalysisType, RiskLevel};
+use std::collections::HashMap;
+use crate::types::{Component, RiskLevel};
 use anyhow::Result;
 use log::{info, warn, debug};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+
 use std::process::{Command, Stdio};
-use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 

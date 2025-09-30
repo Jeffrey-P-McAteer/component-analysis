@@ -294,7 +294,7 @@ impl AnalyzerApp {
             
             if self.graph.path_visualization_mode {
                 ui.separator();
-                ui.label("📊 Multi-selection active");
+                ui.label("[STATS] Multi-selection active");
                 ui.label("💡 Click components to add/remove from selection");
                 ui.label("🖱️ Ctrl+drag to move connected groups");
             }

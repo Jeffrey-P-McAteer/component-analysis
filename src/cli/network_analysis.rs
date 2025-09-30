@@ -2,7 +2,7 @@ use crate::database::{open_database, ComponentQueries};
 use crate::network::{NetworkTopologyAnalyzer, NetworkTopologyReport};
 use crate::types::{AnalysisResult, AnalysisType};
 use anyhow::Result;
-use log::{info, warn, error};
+use log::{info, warn};
 use std::path::Path;
 
 pub fn run(
@@ -429,8 +429,8 @@ fn display_analysis_summary(report: &NetworkTopologyReport) {
     println!("\nOverall Network Security Score: {:.1}%", report.security_score * 100.0);
     
     let status_emoji = match report.network_health.threat_level {
-        crate::types::RiskLevel::Low => "✅",
-        crate::types::RiskLevel::Medium => "⚠️",
+        crate::types::RiskLevel::Low => "[SUCCESS]",
+        crate::types::RiskLevel::Medium => "[WARNING]",
         crate::types::RiskLevel::High => "🔶",
         crate::types::RiskLevel::Critical => "🔴",
     };

@@ -2,7 +2,6 @@ use crate::types::{Instruction, Function, CallType, CallEdge};
 use anyhow::{Result, anyhow};
 use capstone::prelude::*;
 use capstone::{Arch, Mode, arch};
-use std::collections::HashMap;
 
 pub struct DisassemblyEngine {
     capstone: Capstone,
@@ -260,6 +259,7 @@ pub enum SyscallType {
     LinuxX64,
     LinuxSysenter,
     ArmSvc,
+    #[allow(dead_code)]
     WindowsNtdll,
 }
 

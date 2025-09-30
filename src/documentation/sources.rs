@@ -7,6 +7,7 @@ pub struct StandardLibrarySource;
 
 impl DocumentationSource for StandardLibrarySource {
     async fn search(
+        &self,
         function_name: &str,
         platform: &str,
         config: &DocumentationLookupConfig,
@@ -146,6 +147,7 @@ pub struct WindowsAPISource;
 
 impl DocumentationSource for WindowsAPISource {
     async fn search(
+        &self,
         function_name: &str,
         platform: &str,
         config: &DocumentationLookupConfig,
@@ -636,6 +638,7 @@ pub struct LinuxAPISource;
 
 impl DocumentationSource for LinuxAPISource {
     async fn search(
+        &self,
         function_name: &str,
         platform: &str,
         config: &DocumentationLookupConfig,
@@ -688,6 +691,7 @@ pub struct POSIXSource;
 
 impl DocumentationSource for POSIXSource {
     async fn search(
+        &self,
         function_name: &str,
         platform: &str,
         config: &DocumentationLookupConfig,
@@ -740,6 +744,7 @@ pub struct ManualPageSource;
 
 impl DocumentationSource for ManualPageSource {
     async fn search(
+        &self,
         function_name: &str,
         platform: &str,
         config: &DocumentationLookupConfig,
@@ -856,7 +861,7 @@ mod tests {
             
             match result {
                 Ok(Some(doc)) => {
-                    println!("✅ CreateFile documentation found:");
+                    println!("[SUCCESS] CreateFile documentation found:");
                     println!("Header: {:?}", doc.header);
                     println!("Description length: {} chars", doc.description.len());
                     println!("Source: {}", doc.source_url);
@@ -867,10 +872,10 @@ mod tests {
                     assert!(doc.documentation_type == DocumentationType::WindowsAPI, "Should be Windows API type");
                 }
                 Ok(None) => {
-                    panic!("❌ No documentation found for CreateFile");
+                    panic!("[ERROR] No documentation found for CreateFile");
                 }
                 Err(e) => {
-                    panic!("❌ Error looking up CreateFile: {}", e);
+                    panic!("[ERROR] Error looking up CreateFile: {}", e);
                 }
             }
         });
@@ -885,7 +890,7 @@ mod tests {
             
             match result {
                 Ok(Some(doc)) => {
-                    println!("✅ VirtualProtect documentation found:");
+                    println!("[SUCCESS] VirtualProtect documentation found:");
                     println!("Header: {:?}", doc.header);
                     println!("Description length: {} chars", doc.description.len());
                     println!("Source: {}", doc.source_url);
@@ -896,10 +901,10 @@ mod tests {
                     assert!(doc.documentation_type == DocumentationType::WindowsAPI, "Should be Windows API type");
                 }
                 Ok(None) => {
-                    panic!("❌ No documentation found for VirtualProtect");
+                    panic!("[ERROR] No documentation found for VirtualProtect");
                 }
                 Err(e) => {
-                    panic!("❌ Error looking up VirtualProtect: {}", e);
+                    panic!("[ERROR] Error looking up VirtualProtect: {}", e);
                 }
             }
         });
@@ -914,7 +919,7 @@ mod tests {
             
             match result {
                 Ok(Some(doc)) => {
-                    println!("✅ ReadFile documentation found:");
+                    println!("[SUCCESS] ReadFile documentation found:");
                     println!("Header: {:?}", doc.header);
                     println!("Description length: {} chars", doc.description.len());
                     println!("Source: {}", doc.source_url);
@@ -925,10 +930,10 @@ mod tests {
                     assert!(doc.documentation_type == DocumentationType::WindowsAPI, "Should be Windows API type");
                 }
                 Ok(None) => {
-                    panic!("❌ No documentation found for ReadFile");
+                    panic!("[ERROR] No documentation found for ReadFile");
                 }
                 Err(e) => {
-                    panic!("❌ Error looking up ReadFile: {}", e);
+                    panic!("[ERROR] Error looking up ReadFile: {}", e);
                 }
             }
         });
@@ -943,7 +948,7 @@ mod tests {
             
             match result {
                 Ok(Some(doc)) => {
-                    println!("✅ strlen documentation found:");
+                    println!("[SUCCESS] strlen documentation found:");
                     println!("Header: {:?}", doc.header);
                     println!("Description length: {} chars", doc.description.len());
                     println!("Source: {}", doc.source_url);
@@ -954,10 +959,10 @@ mod tests {
                     assert!(doc.documentation_type == DocumentationType::StandardLibrary, "Should be Standard Library type");
                 }
                 Ok(None) => {
-                    panic!("❌ No documentation found for strlen");
+                    panic!("[ERROR] No documentation found for strlen");
                 }
                 Err(e) => {
-                    panic!("❌ Error looking up strlen: {}", e);
+                    panic!("[ERROR] Error looking up strlen: {}", e);
                 }
             }
         });
@@ -972,7 +977,7 @@ mod tests {
             
             match result {
                 Ok(Some(doc)) => {
-                    println!("✅ malloc documentation found:");
+                    println!("[SUCCESS] malloc documentation found:");
                     println!("Header: {:?}", doc.header);
                     println!("Description length: {} chars", doc.description.len());
                     println!("Source: {}", doc.source_url);
@@ -983,10 +988,10 @@ mod tests {
                     assert!(doc.documentation_type == DocumentationType::StandardLibrary, "Should be Standard Library type");
                 }
                 Ok(None) => {
-                    panic!("❌ No documentation found for malloc");
+                    panic!("[ERROR] No documentation found for malloc");
                 }
                 Err(e) => {
-                    panic!("❌ Error looking up malloc: {}", e);
+                    panic!("[ERROR] Error looking up malloc: {}", e);
                 }
             }
         });
@@ -1001,7 +1006,7 @@ mod tests {
             
             match result {
                 Ok(Some(doc)) => {
-                    println!("✅ printf documentation found:");
+                    println!("[SUCCESS] printf documentation found:");
                     println!("Header: {:?}", doc.header);
                     println!("Description length: {} chars", doc.description.len());
                     println!("Source: {}", doc.source_url);
@@ -1012,10 +1017,10 @@ mod tests {
                     assert!(doc.documentation_type == DocumentationType::StandardLibrary, "Should be Standard Library type");
                 }
                 Ok(None) => {
-                    panic!("❌ No documentation found for printf");
+                    panic!("[ERROR] No documentation found for printf");
                 }
                 Err(e) => {
-                    panic!("❌ Error looking up printf: {}", e);
+                    panic!("[ERROR] Error looking up printf: {}", e);
                 }
             }
         });
@@ -1032,7 +1037,7 @@ mod tests {
             let url = "https://en.cppreference.com/w/c/string/byte/strlen";
             match client.get_text(url).await {
                 Ok(html) => {
-                    println!("✅ Successfully fetched cppreference strlen page");
+                    println!("[SUCCESS] Successfully fetched cppreference strlen page");
                     println!("Content length: {} chars", html.len());
                     assert!(html.contains("strlen"), "Page should contain 'strlen'");
                     assert!(html.len() > 1000, "Page should have substantial content");
@@ -1041,13 +1046,13 @@ mod tests {
                     let description = StandardLibrarySource::parse_cppreference_html(&html, "strlen");
                     println!("Parsed description length: {} chars", description.len());
                     if !description.is_empty() {
-                        println!("✅ Successfully parsed description from cppreference");
+                        println!("[SUCCESS] Successfully parsed description from cppreference");
                     } else {
-                        println!("⚠️  Parsing needs improvement - no description extracted");
+                        println!("[WARNING]  Parsing needs improvement - no description extracted");
                     }
                 }
                 Err(e) => {
-                    println!("⚠️  Failed to access cppreference directly: {}", e);
+                    println!("[WARNING]  Failed to access cppreference directly: {}", e);
                 }
             }
         });
@@ -1064,7 +1069,7 @@ mod tests {
             let url = "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea";
             match client.get_text(url).await {
                 Ok(html) => {
-                    println!("✅ Successfully fetched Microsoft Learn CreateFileA page");
+                    println!("[SUCCESS] Successfully fetched Microsoft Learn CreateFileA page");
                     println!("Content length: {} chars", html.len());
                     assert!(html.to_lowercase().contains("createfile"), "Page should contain 'createfile'");
                     assert!(html.len() > 1000, "Page should have substantial content");
@@ -1073,13 +1078,13 @@ mod tests {
                     let description = WindowsAPISource::parse_microsoft_learn(&html, "CreateFileA");
                     println!("Parsed description length: {} chars", description.len());
                     if !description.is_empty() {
-                        println!("✅ Successfully parsed description from Microsoft Learn");
+                        println!("[SUCCESS] Successfully parsed description from Microsoft Learn");
                     } else {
-                        println!("⚠️  Parsing needs improvement - no description extracted");
+                        println!("[WARNING]  Parsing needs improvement - no description extracted");
                     }
                 }
                 Err(e) => {
-                    println!("⚠️  Failed to access Microsoft Learn directly: {}", e);
+                    println!("[WARNING]  Failed to access Microsoft Learn directly: {}", e);
                 }
             }
         });

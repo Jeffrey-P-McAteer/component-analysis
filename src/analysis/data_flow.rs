@@ -1,5 +1,7 @@
-use crate::types::{Function, Instruction, CallGraph, Component, AnalysisResult, AnalysisType, RiskLevel};
-use crate::analysis::disassembly::DisassemblyEngine;
+// Data flow analysis framework - currently unused but part of planned analysis pipeline
+#![allow(dead_code)]
+
+use crate::types::{Function, Instruction, CallGraph, AnalysisResult, AnalysisType, RiskLevel};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use log::{debug, info};
@@ -400,7 +402,7 @@ impl DataFlowAnalyzer {
             let write_regs = self.get_write_registers(&instruction.mnemonic, &instruction.operands);
             
             // Look for subsequent instructions that read these registers
-            for (j, later_instruction) in function.instructions.iter().enumerate().skip(i + 1) {
+            for (_j, later_instruction) in function.instructions.iter().enumerate().skip(i + 1) {
                 let read_regs = self.get_read_registers(&later_instruction.mnemonic, &later_instruction.operands);
                 
                 for write_reg in &write_regs {

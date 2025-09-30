@@ -1,6 +1,6 @@
 use crate::types::{CallGraph, Function, CallEdge, CallType, Instruction};
 use crate::analysis::disassembly::{DisassemblyEngine, SyscallInfo};
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use log::{debug, warn, info};
 
@@ -388,6 +388,7 @@ pub struct SyscallPath {
     pub function_address: u64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionComplexity {
     pub address: u64,

@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -100,10 +99,14 @@ impl FunctionDocumentation {
 
 #[derive(Debug, Clone)]
 pub struct DocumentationLookupConfig {
+    #[allow(dead_code)]
     pub user_agent: String,
+    #[allow(dead_code)]
     pub timeout_seconds: u64,
+    #[allow(dead_code)]
     pub max_retries: u32,
     pub cache_duration_hours: u64,
+    #[allow(dead_code)]
     pub preferred_sources: Vec<DocumentationType>,
 }
 

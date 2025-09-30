@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::types::{Component, ComponentType, AnalysisResult, AnalysisType, RiskLevel};
 use crate::ml::{MachineLearningClassifier, ClassificationResult, AnomalyDetectionResult, ThreatPrediction};
 use crate::network::{NetworkTopologyAnalyzer, NetworkTopologyReport};
@@ -6,7 +7,6 @@ use crate::performance::PerformanceManager;
 use anyhow::Result;
 use log::{info, warn, debug};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use chrono::{DateTime, Utc, Duration};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
+use std::collections::HashMap;
 use crate::types::{Component, Relationship, Function};
-use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
-use log::{debug, info, warn};
+use log::{debug, info};
 
 pub struct PerformanceManager {
     pub metrics: PerformanceMetrics,

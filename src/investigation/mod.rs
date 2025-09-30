@@ -100,7 +100,7 @@ impl InvestigationManager {
 
     pub fn load_investigations(&mut self, db_path: &Path) -> anyhow::Result<()> {
         let db = open_database(db_path)?;
-        let conn = db.connection();
+        let _conn = db.connection();
         
         // Load investigations from database
         // Note: Using simplified query for now - would need proper implementation

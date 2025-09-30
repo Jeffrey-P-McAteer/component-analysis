@@ -3,6 +3,8 @@ pub mod app;
 #[cfg(feature = "gui")]
 pub mod components;
 #[cfg(feature = "gui")]
+pub mod documentation;
+#[cfg(feature = "gui")]
 pub mod graph;
 #[cfg(feature = "gui")]
 pub mod layouts;
@@ -13,5 +15,3 @@ pub use app::*;
 pub use graph::*;
 #[cfg(feature = "gui")]
 pub use components::*;
-#[cfg(feature = "gui")]
-pub use layouts::*;

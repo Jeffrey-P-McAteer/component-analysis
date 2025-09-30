@@ -16,7 +16,7 @@ mod documentation;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Commands};
-use log::{info, error};
+use log::info;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();

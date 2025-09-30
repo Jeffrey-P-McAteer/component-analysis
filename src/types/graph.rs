@@ -3,6 +3,7 @@ use petgraph::{Graph, Directed};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 pub type ComponentGraph = Graph<Component, Relationship, Directed>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,10 +28,12 @@ impl CallGraph {
         self.edges.push(edge);
     }
 
+    #[allow(dead_code)]
     pub fn get_function(&self, address: &u64) -> Option<&Function> {
         self.functions.get(address)
     }
 
+    #[allow(dead_code)]
     pub fn get_callers(&self, target: u64) -> Vec<&CallEdge> {
         self.edges.iter().filter(|e| e.callee == target).collect()
     }

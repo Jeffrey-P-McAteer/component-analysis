@@ -1,15 +1,16 @@
-use crate::types::{DocumentationSearchResult, DocumentationType, DocumentationLookupConfig};
+use crate::types::{DocumentationType, DocumentationLookupConfig, DocumentationSearchResult};
 use anyhow::Result;
-use serde_json::Value;
 
 /// Trait for documentation sources
 pub trait DocumentationSource {
     async fn search(
+        &self,
         function_name: &str,
         platform: &str,
         config: &DocumentationLookupConfig,
     ) -> Result<Option<DocumentationSearchResult>>;
 }
+
 
 /// HTTP client utilities for documentation lookup
 pub struct HttpClient {
@@ -56,11 +57,6 @@ impl HttpClient {
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error during HTTP request")))
     }
 
-    pub async fn get_json(&self, url: &str) -> Result<Value> {
-        let text = self.get_text(url).await?;
-        let json: Value = serde_json::from_str(&text)?;
-        Ok(json)
-    }
 }
 
 /// Text processing utilities for extracting function information

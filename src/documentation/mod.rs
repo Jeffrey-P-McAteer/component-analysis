@@ -2,16 +2,18 @@ pub mod lookup;
 pub mod sources;
 pub mod syntax;
 
-pub use lookup::*;
 pub use sources::*;
 pub use syntax::*;
 
 use crate::types::{FunctionDocumentation, DocumentationType, DocumentationSearchResult};
+use crate::documentation::lookup::DocumentationSource;
+use crate::database::FunctionDocumentationQueries;
 use anyhow::Result;
 
 /// Documentation service that manages lookup and caching
 #[derive(Clone)]
 pub struct DocumentationService {
+    #[allow(dead_code)]
     config: crate::types::DocumentationLookupConfig,
 }
 
@@ -33,7 +35,6 @@ impl DocumentationService {
         function_name: &str,
         platform_hint: Option<&str>,
     ) -> Result<Option<FunctionDocumentation>> {
-        use crate::database::FunctionDocumentationQueries;
         
         log::info!("Looking up documentation for function: {} (platform: {:?})", function_name, platform_hint);
 
@@ -79,7 +80,6 @@ impl DocumentationService {
         function_name: &str,
         platform_hint: Option<&str>,
     ) -> Result<Option<FunctionDocumentation>> {
-        use crate::database::FunctionDocumentationQueries;
 
         // Check if we have fresh documentation
         if !FunctionDocumentationQueries::is_fresh(db_conn, function_name, self.config.cache_duration_hours)? {
@@ -140,19 +140,19 @@ impl DocumentationService {
     ) -> Result<Option<DocumentationSearchResult>> {
         match doc_type {
             DocumentationType::StandardLibrary => {
-                StandardLibrarySource::search(function_name, platform, &self.config).await
+                StandardLibrarySource.search(function_name, platform, &self.config).await
             }
             DocumentationType::WindowsAPI => {
-                WindowsAPISource::search(function_name, platform, &self.config).await
+                WindowsAPISource.search(function_name, platform, &self.config).await
             }
             DocumentationType::LinuxAPI => {
-                LinuxAPISource::search(function_name, platform, &self.config).await
+                LinuxAPISource.search(function_name, platform, &self.config).await
             }
             DocumentationType::POSIX => {
-                POSIXSource::search(function_name, platform, &self.config).await
+                POSIXSource.search(function_name, platform, &self.config).await
             }
             DocumentationType::Manual => {
-                ManualPageSource::search(function_name, platform, &self.config).await
+                ManualPageSource.search(function_name, platform, &self.config).await
             }
             _ => Ok(None), // Skip other sources for now
         }

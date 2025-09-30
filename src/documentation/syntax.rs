@@ -5,10 +5,10 @@ use syntect::highlighting::{ThemeSet, Style};
 #[cfg(feature = "gui")]
 use syntect::parsing::SyntaxSet;
 #[cfg(feature = "gui")]
-use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use syntect::util::LinesWithEndings;
 
 #[cfg(feature = "gui")]
-use egui::{Color32, RichText};
+use egui::Color32;
 
 /// Syntax highlighter for function headers and code snippets
 #[cfg(feature = "gui")]
@@ -64,47 +64,7 @@ impl SyntaxHighlighter {
         )
     }
 
-    /// Create a highlighted RichText for egui
-    pub fn create_rich_text(&self, code: &str, language: &str) -> Vec<RichText> {
-        let highlighted = self.highlight_code(code, language);
-        highlighted
-            .into_iter()
-            .map(|(text, color)| RichText::new(text).color(color))
-            .collect()
-    }
 
-    /// Format function header with basic highlighting (fallback without syntect)
-    pub fn format_header_basic(header: &str) -> Vec<(String, Color32)> {
-        let mut parts = Vec::new();
-        let tokens: Vec<&str> = header.split_whitespace().collect();
-
-        for (i, token) in tokens.iter().enumerate() {
-            let color = match *token {
-                // Return types
-                t if t.starts_with("int") || t.starts_with("void") || t.starts_with("char") || 
-                     t.starts_with("size_t") || t.starts_with("BOOL") || t.starts_with("HANDLE") ||
-                     t.starts_with("NTSTATUS") || t.starts_with("DWORD") => Color32::LIGHT_BLUE,
-                
-                // Keywords
-                "const" | "static" | "extern" | "inline" => Color32::from_rgb(255, 128, 0), // Orange
-                
-                // Function name (usually after return type)
-                t if i > 0 && t.contains('(') => Color32::from_rgb(255, 255, 128), // Light yellow
-                
-                // Parameters and other tokens
-                _ => Color32::WHITE,
-            };
-
-            parts.push((token.to_string(), color));
-            
-            // Add space between tokens except for the last one
-            if i < tokens.len() - 1 {
-                parts.push((" ".to_string(), Color32::WHITE));
-            }
-        }
-
-        parts
-    }
 }
 
 #[cfg(feature = "gui")]

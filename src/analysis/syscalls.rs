@@ -1,9 +1,12 @@
+// Comprehensive syscall analysis framework - many components planned for future use
+#![allow(dead_code)]
+
 use crate::analysis::disassembly::{SyscallInfo, SyscallType};
-use crate::analysis::call_graph::{SyscallPath, CallGraphBuilder};
-use crate::types::{Syscall, RiskLevel, Instruction};
-use anyhow::{Result, anyhow};
+use crate::analysis::call_graph::SyscallPath;
+use crate::types::{RiskLevel, Instruction};
+use anyhow::Result;
 use std::collections::HashMap;
-use log::{debug, info, warn};
+use log::info;
 
 pub struct SyscallAnalyzer {
     syscall_db: SyscallDatabase,

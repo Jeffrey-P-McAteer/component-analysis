@@ -8,4 +8,3 @@ pub use disassembly::*;
 pub use call_graph::*;
 pub use syscalls::*;
 pub use capabilities::*;
-pub use data_flow::*;

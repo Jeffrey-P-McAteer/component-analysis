@@ -1,8 +1,11 @@
-use crate::analysis::syscalls::{SyscallAnalysisReport, SyscallPattern};
+// Comprehensive capability analysis framework - many components planned for future use  
+#![allow(dead_code)]
+
+use crate::analysis::syscalls::SyscallAnalysisReport;
 use crate::types::{Capability, RiskLevel};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use log::{info, debug};
+use std::collections::HashMap;
+use log::info;
 
 pub struct CapabilityAnalyzer {
     capability_rules: Vec<CapabilityRule>,

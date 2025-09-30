@@ -2,7 +2,7 @@ use crate::database::{open_database, ComponentQueries};
 use crate::ml::{MachineLearningClassifier, ClassificationResult, AnomalyDetectionResult, ThreatPrediction};
 use crate::types::{AnalysisResult, AnalysisType};
 use anyhow::Result;
-use log::{info, warn, error};
+use log::{info, warn};
 use std::path::Path;
 
 pub fn run(
@@ -536,7 +536,7 @@ fn display_analysis_summary(
     }
     
     if !threats.is_empty() {
-        println!("🔍 {} threat predictions made", threats.len());
+        println!("[SEARCH] {} threat predictions made", threats.len());
         
         let critical_threats = threats.iter()
             .filter(|(_, threat)| matches!(threat.severity, crate::types::RiskLevel::Critical))

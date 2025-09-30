@@ -6,7 +6,6 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
-pub use models::*;
 pub use queries::*;
 
 pub struct Database {

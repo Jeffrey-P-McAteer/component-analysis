@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension};
 pub struct ComponentQueries;
 
 impl ComponentQueries {
+    #[allow(dead_code)]
     pub fn get_by_id(conn: &Connection, id: &str) -> Result<Option<Component>> {
         let mut stmt = conn.prepare(
             "SELECT id, component_type, name, path, hash, metadata, created_at, updated_at
@@ -137,6 +138,7 @@ impl RelationshipQueries {
         Ok(relationships)
     }
 
+    #[allow(dead_code)]
     pub fn get_by_type(conn: &Connection, relationship_type: RelationshipType) -> Result<Vec<Relationship>> {
         let mut stmt = conn.prepare(
             "SELECT id, source_id, target_id, relationship_type, metadata, created_at
@@ -189,6 +191,7 @@ impl AnalysisQueries {
         Ok(results)
     }
 
+    #[allow(dead_code)]
     pub fn get_latest_by_component_and_type(
         conn: &Connection,
         component_id: &str,
@@ -207,9 +210,11 @@ impl AnalysisQueries {
     }
 }
 
+#[allow(dead_code)]
 pub struct InvestigationQueries;
 
 impl InvestigationQueries {
+    #[allow(dead_code)]
     pub fn get_by_component(conn: &Connection, component_id: &str) -> Result<Vec<Investigation>> {
         let mut stmt = conn.prepare(
             "SELECT id, component_id, investigation_type, findings, investigator, created_at
@@ -245,6 +250,7 @@ impl FunctionDocumentationQueries {
     }
 
     /// Get documentation for a specific function and platform
+    #[allow(dead_code)]
     pub fn get_by_function_and_platform(conn: &Connection, function_name: &str, platform: &str) -> Result<Option<crate::types::FunctionDocumentation>> {
         let mut stmt = conn.prepare(
             "SELECT id, function_name, platform, header, description, source_url, documentation_type, 
@@ -259,6 +265,7 @@ impl FunctionDocumentationQueries {
     }
 
     /// Get all documentation entries (for admin/debugging)
+    #[allow(dead_code)]
     pub fn get_all(conn: &Connection) -> Result<Vec<crate::types::FunctionDocumentation>> {
         let mut stmt = conn.prepare(
             "SELECT id, function_name, platform, header, description, source_url, documentation_type, 
@@ -277,6 +284,7 @@ impl FunctionDocumentationQueries {
     }
 
     /// Check if documentation exists and is recent enough
+    #[allow(dead_code)]
     pub fn is_fresh(conn: &Connection, function_name: &str, max_age_hours: u64) -> Result<bool> {
         let cutoff_time = chrono::Utc::now() - chrono::Duration::hours(max_age_hours as i64);
         
@@ -291,6 +299,7 @@ impl FunctionDocumentationQueries {
     }
 
     /// Delete old documentation entries
+    #[allow(dead_code)]
     pub fn cleanup_old_entries(conn: &Connection, max_age_hours: u64) -> Result<usize> {
         let cutoff_time = chrono::Utc::now() - chrono::Duration::hours(max_age_hours as i64);
         

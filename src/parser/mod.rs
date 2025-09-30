@@ -98,6 +98,7 @@ impl BinaryParser {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_exported_functions(&self) -> Result<Vec<String>> {
         let object = Object::parse(&self.data)?;
         match object {

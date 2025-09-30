@@ -1,9 +1,9 @@
-use crate::types::{Component, Relationship, RelationshipType, AnalysisResult, AnalysisType, RiskLevel, ComponentType};
+use crate::types::{Component, RiskLevel, ComponentType};
 use anyhow::Result;
 use log::{info, warn, debug};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 use std::io::{Read, Write};
 use petgraph::{Graph, Directed, graph::NodeIndex};
@@ -1425,7 +1425,7 @@ impl NetworkScanner {
         let state = match TcpStream::connect_timeout(&socket_addr, timeout) {
             Ok(mut stream) => {
                 // Try to grab banner if service detection is enabled
-                let banner = Self::grab_banner(&mut stream, timeout);
+                let _banner = Self::grab_banner(&mut stream, timeout);
                 PortState::Open
             }
             Err(_) => PortState::Closed,
@@ -1721,7 +1721,7 @@ impl NetworkScanner {
         Ok(())
     }
 
-    fn identify_service_fast(&self, ip: IpAddr, port: u16, _protocol: &NetworkProtocol, _timeout: Duration) -> Option<DetectedService> {
+    fn identify_service_fast(&self, _ip: IpAddr, port: u16, _protocol: &NetworkProtocol, _timeout: Duration) -> Option<DetectedService> {
         // Fast service identification based only on port numbers (no network probing)
         let (service_name, _default_version): (&str, Option<&str>) = match port {
             21 => ("ftp", None),
@@ -1755,7 +1755,7 @@ impl NetworkScanner {
         })
     }
 
-    fn identify_service(&self, ip: IpAddr, port: u16, protocol: &NetworkProtocol) -> Option<DetectedService> {
+    fn identify_service(&self, ip: IpAddr, port: u16, _protocol: &NetworkProtocol) -> Option<DetectedService> {
         // Common service identification based on port numbers
         let (service_name, _default_version): (&str, Option<&str>) = match port {
             21 => ("ftp", None),
@@ -1922,7 +1922,7 @@ impl NetworkScanner {
         None
     }
 
-    fn generate_service_fingerprint(&self, ip: IpAddr, port: u16) -> Option<ServiceFingerprint> {
+    fn generate_service_fingerprint(&self, _ip: IpAddr, _port: u16) -> Option<ServiceFingerprint> {
         // Generate a basic service fingerprint
         Some(ServiceFingerprint {
             protocol: "tcp".to_string(),
@@ -2009,9 +2009,8 @@ impl NetworkScanner {
 
         for i in 1..=num_hosts.min(254) {
             let host_addr = network_addr + i;
-            if let Ok(ip) = Ipv4Addr::try_from(host_addr) {
-                targets.push(IpAddr::V4(ip));
-            }
+            let ip = Ipv4Addr::try_from(host_addr).unwrap();
+            targets.push(IpAddr::V4(ip));
         }
 
         Ok(targets)
@@ -2031,9 +2030,8 @@ impl NetworkScanner {
 
         let mut targets = Vec::new();
         for addr in start_addr..=end_addr {
-            if let Ok(ip) = Ipv4Addr::try_from(addr) {
-                targets.push(IpAddr::V4(ip));
-            }
+            let ip = Ipv4Addr::try_from(addr).unwrap();
+            targets.push(IpAddr::V4(ip));
         }
 
         Ok(targets)

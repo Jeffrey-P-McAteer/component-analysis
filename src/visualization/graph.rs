@@ -1,7 +1,7 @@
 #[cfg(feature = "gui")]
 use crate::types::{Component, Relationship, ComponentType};
 #[cfg(feature = "gui")]
-use egui::{Context, Ui, Pos2, Vec2, Rect, Color32, Stroke, Rounding};
+use egui::{Ui, Pos2, Vec2, Rect, Color32, Stroke, Rounding};
 #[cfg(feature = "gui")]
 use std::collections::{HashMap, HashSet, BTreeMap};
 

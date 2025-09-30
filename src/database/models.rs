@@ -2,10 +2,11 @@ use crate::types::{Component, Relationship, AnalysisResult, Investigation, Compo
 use anyhow::Result;
 use rusqlite::{Connection, Row};
 use serde_json;
-use chrono::{DateTime, Utc};
+use chrono;
 use std::str::FromStr;
 
 impl Component {
+    #[allow(dead_code)]
     pub fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         let metadata_str: String = row.get("metadata")?;
         let metadata = serde_json::from_str(&metadata_str).unwrap_or_default();
@@ -54,6 +55,7 @@ impl Component {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update(&self, conn: &Connection) -> Result<()> {
         let metadata_str = serde_json::to_string(&self.metadata)?;
         
@@ -76,6 +78,7 @@ impl Component {
 }
 
 impl Relationship {
+    #[allow(dead_code)]
     pub fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         let metadata_str: String = row.get("metadata")?;
         let metadata = serde_json::from_str(&metadata_str).unwrap_or_default();
@@ -119,6 +122,7 @@ impl Relationship {
 }
 
 impl AnalysisResult {
+    #[allow(dead_code)]
     pub fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         let results_str: String = row.get("results")?;
         let results = serde_json::from_str(&results_str).unwrap_or(serde_json::Value::Null);
@@ -162,6 +166,7 @@ impl AnalysisResult {
 }
 
 impl Investigation {
+    #[allow(dead_code)]
     pub fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         let findings_str: String = row.get("findings")?;
         let findings = serde_json::from_str(&findings_str).unwrap_or(serde_json::Value::Null);
@@ -205,6 +210,7 @@ impl Investigation {
 }
 
 impl FunctionDocumentation {
+    #[allow(dead_code)]
     pub fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         let created_at_str: String = row.get("created_at")?;
         let updated_at_str: String = row.get("updated_at")?;
@@ -257,6 +263,7 @@ impl FunctionDocumentation {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update(&self, conn: &Connection) -> Result<()> {
         conn.execute(
             "UPDATE function_documentation SET function_name = ?2, platform = ?3, header = ?4, description = ?5, 

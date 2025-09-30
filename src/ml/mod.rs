@@ -1,8 +1,7 @@
-use crate::types::{Component, ComponentType, AnalysisResult, AnalysisType, RiskLevel};
+use crate::types::{Component, ComponentType, RiskLevel};
 use anyhow::Result;
-use log::{info, warn, debug};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
