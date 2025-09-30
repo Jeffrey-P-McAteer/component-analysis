@@ -116,6 +116,11 @@ impl ComponentDetailView {
     }
 
     pub fn render(&mut self, ui: &mut Ui, db_conn: Option<&rusqlite::Connection>) {
+        // Always request repaint when documentation lookup is active to ensure UI responsiveness
+        if self.documentation_loading || self.lookup_task.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        
         if let Some(component) = &self.component {
             ui.heading(&component.name);
             ui.separator();
@@ -226,6 +231,11 @@ impl ComponentDetailView {
     fn render_documentation_section(&mut self, ui: &mut Ui, db_conn: Option<&rusqlite::Connection>) {
         let current_component_id = self.component.as_ref().map(|c| c.id.clone());
         
+        // Request repaint continuously while task is running to poll for completion
+        if self.documentation_loading || self.lookup_task.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        
         // Check if lookup task is completed
         if let Some(task) = &self.lookup_task {
             if task.is_finished() {
@@ -256,6 +266,9 @@ impl ComponentDetailView {
                         self.documentation_error = None;
                         self.lookup_in_progress_global = false;
                         
+                        // Force immediate UI update
+                        ui.ctx().request_repaint();
+                        
                         // Save to database immediately if we have a connection
                         if let Some(conn) = db_conn {
                             if let Some(cached_doc) = &self.cached_documentation {
@@ -277,18 +290,27 @@ impl ComponentDetailView {
                         self.documentation_loading = false;
                         self.documentation_error = Some("No documentation found".to_string());
                         self.lookup_in_progress_global = false;
+                        
+                        // Force immediate UI update
+                        ui.ctx().request_repaint();
                     },
                     Ok(Err(e)) => {
                         log::error!("Documentation lookup failed: {}", e);
                         self.documentation_loading = false;
                         self.documentation_error = Some(e.to_string());
                         self.lookup_in_progress_global = false;
+                        
+                        // Force immediate UI update
+                        ui.ctx().request_repaint();
                     },
                     Err(_) => {
                         log::error!("Documentation lookup task panicked");
                         self.documentation_loading = false;
                         self.documentation_error = Some("Documentation lookup task failed unexpectedly".to_string());
                         self.lookup_in_progress_global = false;
+                        
+                        // Force immediate UI update
+                        ui.ctx().request_repaint();
                     }
                 }
             } else {
@@ -309,13 +331,16 @@ impl ComponentDetailView {
         // Render based on current state
         if let Some(doc) = &self.cached_documentation {
             // Display cached or newly fetched documentation with enhanced rendering
+            log::debug!("📄 Rendering cached documentation for: {}", doc.function_name);
             self.render_documentation_content(ui, doc);
         } else if let Some(error) = &self.documentation_error {
             // Show error state with retry option
             let error_message = error.clone();
+            log::debug!("❌ Rendering error state: {}", error_message);
             self.render_documentation_error(ui, &error_message);
         } else if self.documentation_loading {
             // Show progress indicator with modern circular spinner
+            log::debug!("⏳ Rendering loading state");
             self.render_loading_state(ui);
         } else {
             // Automatically start lookup for function components (with proper guards)
@@ -351,6 +376,9 @@ impl ComponentDetailView {
                     let component_id = component.id.clone();
                     log::info!("🔍 Auto-starting documentation lookup for function: {} (no cached documentation available)", function_name);
                     self.start_documentation_lookup(&function_name, &component_id, conn);
+                    
+                    // Force immediate UI update to show loading state
+                    ui.ctx().request_repaint();
                 } else {
                     if self.cached_documentation.is_some() {
                         log::debug!("✅ Using cached documentation, no lookup needed");
@@ -879,7 +907,7 @@ impl ComponentDetailView {
         });
         
         self.lookup_task = Some(task);
-        log::info!("Documentation lookup task started for: {}", function_name);
+        log::info!("📡 Documentation lookup task started for: {} (task created successfully)", function_name);
     }
 }
 
