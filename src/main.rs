@@ -11,6 +11,7 @@ mod performance;
 mod dynamic;
 mod network;
 mod ml;
+mod documentation;
 
 use anyhow::Result;
 use clap::Parser;

@@ -226,3 +226,79 @@ impl InvestigationQueries {
         Ok(investigations)
     }
 }
+
+pub struct FunctionDocumentationQueries;
+
+impl FunctionDocumentationQueries {
+    /// Get documentation for a specific function name
+    pub fn get_by_function_name(conn: &Connection, function_name: &str) -> Result<Option<crate::types::FunctionDocumentation>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, function_name, platform, header, description, source_url, documentation_type, 
+             quality_score, lookup_timestamp, created_at, updated_at
+             FROM function_documentation WHERE function_name = ?1 ORDER BY quality_score DESC, created_at DESC LIMIT 1"
+        )?;
+
+        let result = stmt.query_row([function_name], |row| crate::types::FunctionDocumentation::from_row(row))
+            .optional()?;
+
+        Ok(result)
+    }
+
+    /// Get documentation for a specific function and platform
+    pub fn get_by_function_and_platform(conn: &Connection, function_name: &str, platform: &str) -> Result<Option<crate::types::FunctionDocumentation>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, function_name, platform, header, description, source_url, documentation_type, 
+             quality_score, lookup_timestamp, created_at, updated_at
+             FROM function_documentation WHERE function_name = ?1 AND platform = ?2 ORDER BY quality_score DESC, created_at DESC LIMIT 1"
+        )?;
+
+        let result = stmt.query_row([function_name, platform], |row| crate::types::FunctionDocumentation::from_row(row))
+            .optional()?;
+
+        Ok(result)
+    }
+
+    /// Get all documentation entries (for admin/debugging)
+    pub fn get_all(conn: &Connection) -> Result<Vec<crate::types::FunctionDocumentation>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, function_name, platform, header, description, source_url, documentation_type, 
+             quality_score, lookup_timestamp, created_at, updated_at
+             FROM function_documentation ORDER BY function_name, quality_score DESC"
+        )?;
+
+        let rows = stmt.query_map([], |row| crate::types::FunctionDocumentation::from_row(row))?;
+
+        let mut docs = Vec::new();
+        for doc in rows {
+            docs.push(doc?);
+        }
+
+        Ok(docs)
+    }
+
+    /// Check if documentation exists and is recent enough
+    pub fn is_fresh(conn: &Connection, function_name: &str, max_age_hours: u64) -> Result<bool> {
+        let cutoff_time = chrono::Utc::now() - chrono::Duration::hours(max_age_hours as i64);
+        
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*) FROM function_documentation 
+             WHERE function_name = ?1 AND lookup_timestamp > ?2"
+        )?;
+
+        let count: i64 = stmt.query_row([function_name, &cutoff_time.to_rfc3339()], |row| row.get(0))?;
+
+        Ok(count > 0)
+    }
+
+    /// Delete old documentation entries
+    pub fn cleanup_old_entries(conn: &Connection, max_age_hours: u64) -> Result<usize> {
+        let cutoff_time = chrono::Utc::now() - chrono::Duration::hours(max_age_hours as i64);
+        
+        let rows_affected = conn.execute(
+            "DELETE FROM function_documentation WHERE lookup_timestamp < ?1",
+            [&cutoff_time.to_rfc3339()],
+        )?;
+
+        Ok(rows_affected)
+    }
+}

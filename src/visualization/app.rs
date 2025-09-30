@@ -202,18 +202,21 @@ impl AnalyzerApp {
     }
 
     fn show_component_details(&mut self, ui: &mut Ui) {
+        let mut db_conn = None;
+        
         if let Some(selected_id) = &self.selected_component {
             if let Some(component) = self.components.iter().find(|c| &c.id == selected_id).cloned() {
                 let db_result = open_database(&self.db_path);
                 if let Ok(db) = db_result {
-                    if let Err(e) = self.detail_view.set_component(component, db.connection()) {
+                    db_conn = Some(db);
+                    if let Err(e) = self.detail_view.set_component(component, db_conn.as_ref().unwrap().connection()) {
                         self.error_message = Some(format!("Failed to load component details: {}", e));
                     }
                 }
             }
         }
         
-        self.detail_view.render(ui);
+        self.detail_view.render(ui, db_conn.as_ref().map(|db| db.connection()));
     }
 
     fn show_component_paths(&mut self, component_id: &str) -> anyhow::Result<()> {

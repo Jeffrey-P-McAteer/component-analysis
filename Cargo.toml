@@ -45,10 +45,16 @@ num_cpus = "1.16"
 tokio = { version = "1.0", features = ["full"] }
 futures = "0.3"
 
+# HTTP client for documentation lookup
+reqwest = { version = "0.11", features = ["json"] }
+
+# Syntax highlighting
+syntect = { version = "5.1", optional = true }
+
 # GUI (optional, for visualization)
 egui = { version = "0.30", optional = true }
 eframe = { version = "0.30", optional = true }
 
 [features]
 default = ["gui"]
-gui = ["egui", "eframe"]
+gui = ["egui", "eframe", "syntect"]

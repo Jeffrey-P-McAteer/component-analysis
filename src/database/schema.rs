@@ -60,6 +60,24 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // Function documentation cache table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS function_documentation (
+            id TEXT PRIMARY KEY,
+            function_name TEXT NOT NULL UNIQUE,
+            platform TEXT NOT NULL,
+            header TEXT,
+            description TEXT NOT NULL,
+            source_url TEXT,
+            documentation_type TEXT NOT NULL,
+            quality_score REAL DEFAULT 0.0,
+            lookup_timestamp TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
     // Create indexes for performance
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_components_type ON components(component_type)",
@@ -93,6 +111,16 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_analysis_type ON analysis_results(analysis_type)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_function_docs_name ON function_documentation(function_name)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_function_docs_platform ON function_documentation(platform)",
         [],
     )?;
 

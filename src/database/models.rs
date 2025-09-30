@@ -1,4 +1,4 @@
-use crate::types::{Component, Relationship, AnalysisResult, Investigation, ComponentType, RelationshipType, AnalysisType, InvestigationType};
+use crate::types::{Component, Relationship, AnalysisResult, Investigation, ComponentType, RelationshipType, AnalysisType, InvestigationType, FunctionDocumentation, DocumentationType};
 use anyhow::Result;
 use rusqlite::{Connection, Row};
 use serde_json;
@@ -197,6 +197,81 @@ impl Investigation {
                 &findings_str,
                 &self.investigator,
                 &self.created_at.to_rfc3339(),
+            ],
+        )?;
+        
+        Ok(())
+    }
+}
+
+impl FunctionDocumentation {
+    pub fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
+        let created_at_str: String = row.get("created_at")?;
+        let updated_at_str: String = row.get("updated_at")?;
+        let lookup_timestamp_str: String = row.get("lookup_timestamp")?;
+        
+        let documentation_type_str: String = row.get("documentation_type")?;
+        let documentation_type = DocumentationType::from_str(&documentation_type_str)
+            .map_err(|_| rusqlite::Error::InvalidColumnType(0, "documentation_type".to_string(), rusqlite::types::Type::Text))?;
+            
+        Ok(FunctionDocumentation {
+            id: row.get("id")?,
+            function_name: row.get("function_name")?,
+            platform: row.get("platform")?,
+            header: row.get("header")?,
+            description: row.get("description")?,
+            source_url: row.get("source_url")?,
+            documentation_type,
+            quality_score: row.get("quality_score")?,
+            lookup_timestamp: chrono::DateTime::parse_from_rfc3339(&lookup_timestamp_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(0, "lookup_timestamp".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&chrono::Utc),
+            created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(0, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&chrono::Utc),
+            updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(0, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&chrono::Utc),
+        })
+    }
+
+    pub fn insert(&self, conn: &Connection) -> Result<()> {
+        conn.execute(
+            "INSERT INTO function_documentation (id, function_name, platform, header, description, source_url, documentation_type, quality_score, lookup_timestamp, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                &self.id,
+                &self.function_name,
+                &self.platform,
+                &self.header,
+                &self.description,
+                &self.source_url,
+                &self.documentation_type.to_string(),
+                &self.quality_score,
+                &self.lookup_timestamp.to_rfc3339(),
+                &self.created_at.to_rfc3339(),
+                &self.updated_at.to_rfc3339(),
+            ],
+        )?;
+        
+        Ok(())
+    }
+
+    pub fn update(&self, conn: &Connection) -> Result<()> {
+        conn.execute(
+            "UPDATE function_documentation SET function_name = ?2, platform = ?3, header = ?4, description = ?5, 
+             source_url = ?6, documentation_type = ?7, quality_score = ?8, lookup_timestamp = ?9, updated_at = ?10 WHERE id = ?1",
+            rusqlite::params![
+                &self.id,
+                &self.function_name,
+                &self.platform,
+                &self.header,
+                &self.description,
+                &self.source_url,
+                &self.documentation_type.to_string(),
+                &self.quality_score,
+                &self.lookup_timestamp.to_rfc3339(),
+                &chrono::Utc::now().to_rfc3339(),
             ],
         )?;
         
