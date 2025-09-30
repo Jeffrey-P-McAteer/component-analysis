@@ -48,7 +48,8 @@ pub struct ComponentGraph {
     pub pan_offset: Vec2,
     pub selection: HashSet<String>,
     pub path_visualization_mode: bool,
-    pub highlighted_component: Option<String>,
+    pub highlighted_components: HashSet<String>,
+    pub stable_paths: bool,
     pub read_paths: Vec<Vec<String>>,
     pub write_paths: Vec<Vec<String>>,
     pub dragging_node: Option<String>,
@@ -77,7 +78,8 @@ impl ComponentGraph {
             pan_offset: Vec2::ZERO,
             selection: HashSet::new(),
             path_visualization_mode: false,
-            highlighted_component: None,
+            highlighted_components: HashSet::new(),
+            stable_paths: true,
             read_paths: Vec::new(),
             write_paths: Vec::new(),
             dragging_node: None,
@@ -342,8 +344,9 @@ impl ComponentGraph {
 
         let response = ui.allocate_response(available_rect.size(), egui::Sense::click_and_drag());
 
-        // Handle pan and zoom
-        if response.dragged() && !ui.input(|i| i.modifiers.ctrl) {
+        // Handle pan and zoom (only when not dragging nodes)
+        let is_dragging_nodes = self.dragging_node.is_some();
+        if response.dragged() && !is_dragging_nodes {
             let new_pan = self.pan_offset + response.drag_delta() / self.zoom;
             // Limit pan to reasonable bounds
             self.pan_offset = Vec2::new(
@@ -481,6 +484,8 @@ impl ComponentGraph {
         
         // Apply interactions
         let mut needs_edge_update = false;
+        let mut needs_group_movement = false;
+        let mut group_movement = Vec2::ZERO;
         
         for (node_id, is_hovered, was_clicked, drag_started, is_dragging, drag_released, drag_delta) in node_interactions {
             if let Some(node) = self.nodes.get_mut(&node_id) {
@@ -495,8 +500,22 @@ impl ComponentGraph {
                 
                 // Handle dragging
                 if is_dragging && self.dragging_node.as_ref() == Some(&node_id) {
-                    node.position += drag_delta / self.zoom;
-                    needs_edge_update = true;
+                    // Check if Ctrl is held for group movement
+                    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+                    let movement = drag_delta / self.zoom;
+                    
+                    if ctrl_held && self.path_visualization_mode {
+                        // Store the movement to apply after releasing the borrow
+                        node.position += movement;
+                        needs_edge_update = true;
+                        // Mark that we need to move the group after this loop
+                        needs_group_movement = true;
+                        group_movement = movement;
+                    } else {
+                        // Move only the dragged node
+                        node.position += movement;
+                        needs_edge_update = true;
+                    }
                 }
                 
                 // Handle drag end
@@ -508,18 +527,19 @@ impl ComponentGraph {
                 
                 // Only handle clicks if not dragging
                 if was_clicked && !node.dragging {
-                    if self.path_visualization_mode && self.highlighted_component.as_ref() == Some(&node_id) {
-                        // If clicking on the same highlighted component, clear path visualization
-                        self.clear_path_visualization();
-                    } else {
-                        // Normal selection behavior
-                        if self.selection.contains(&node.id) {
-                            self.selection.remove(&node.id);
-                            node.selected = false;
-                        } else {
-                            self.selection.insert(node.id.clone());
-                            node.selected = true;
-                        }
+                    self.handle_node_selection(&node_id);
+                }
+            }
+        }
+        
+        // Apply group movement after all node interactions are processed
+        if needs_group_movement {
+            // Move other highlighted components (excluding the one already moved)
+            let dragged_node_id = self.dragging_node.clone();
+            for comp_id in &self.highlighted_components {
+                if dragged_node_id.as_ref() != Some(comp_id) {
+                    if let Some(node) = self.nodes.get_mut(comp_id) {
+                        node.position += group_movement;
                     }
                 }
             }
@@ -552,8 +572,66 @@ impl ComponentGraph {
             node.dragging = false;
         }
         self.selection.clear();
+        self.highlighted_components.clear();
         self.dragging_node = None;
         self.drag_start_pos = None;
+        
+        // Clear path visualization when selection is cleared
+        if self.path_visualization_mode {
+            self.clear_path_visualization();
+        }
+    }
+    
+    /// Handles node selection with proper multi-selection support
+    fn handle_node_selection(&mut self, node_id: &str) {
+        // Toggle selection for multi-select
+        if self.selection.contains(node_id) {
+            self.selection.remove(node_id);
+            self.highlighted_components.remove(node_id);
+            if let Some(node) = self.nodes.get_mut(node_id) {
+                node.selected = false;
+            }
+        } else {
+            self.selection.insert(node_id.to_string());
+            self.highlighted_components.insert(node_id.to_string());
+            if let Some(node) = self.nodes.get_mut(node_id) {
+                node.selected = true;
+            }
+        }
+        
+        // Update path visualization for all selected components
+        self.update_path_visualization_for_selection();
+    }
+    
+    /// Updates path visualization for all currently selected components
+    fn update_path_visualization_for_selection(&mut self) {
+        if !self.selection.is_empty() {
+            self.path_visualization_mode = true;
+            
+            // Reset all edges to normal and invisible for clean state
+            for edge in &mut self.edges {
+                edge.edge_type = EdgeType::Normal;
+                edge.visible = false;
+            }
+            
+            // Clear previous paths
+            self.read_paths.clear();
+            self.write_paths.clear();
+            
+            // For each selected component, find its relationships
+            // We'll gather all relationships first to avoid database calls in a loop
+            let all_relationships = self.get_all_current_relationships();
+            let selected_components: Vec<String> = self.selection.iter().cloned().collect();
+            
+            for component_id in &selected_components {
+                self.add_component_paths(component_id, &all_relationships);
+            }
+            
+            // Apply the collected paths
+            self.apply_collected_paths();
+        } else {
+            self.clear_path_visualization();
+        }
     }
 
     pub fn get_selected_components(&self) -> Vec<&Component> {
@@ -564,41 +642,33 @@ impl ComponentGraph {
     }
 
     pub fn highlight_component_paths(&mut self, component_id: &str, relationships: &[Relationship]) {
+        // Clear existing selection and add this component
+        self.selection.clear();
+        self.selection.insert(component_id.to_string());
+        self.highlighted_components.clear();
+        self.highlighted_components.insert(component_id.to_string());
+        
+        // Update the node selection state
+        for node in self.nodes.values_mut() {
+            node.selected = false;
+        }
+        if let Some(node) = self.nodes.get_mut(component_id) {
+            node.selected = true;
+        }
+        
+        // Use the stable multi-selection path update
         self.path_visualization_mode = true;
-        self.highlighted_component = Some(component_id.to_string());
+        self.reset_edges_for_path_visualization();
+        self.read_paths.clear();
+        self.write_paths.clear();
         
-        // Reset all edges to normal and invisible
-        for edge in &mut self.edges {
-            edge.edge_type = EdgeType::Normal;
-            edge.visible = false;
-        }
-        
-        // Find bidirectional read and write paths with proper arrow direction
-        self.read_paths = self.find_read_paths(component_id, relationships);
-        self.write_paths = self.find_write_paths(component_id, relationships);
-        
-        // Add parent-child relationships for hierarchical highlighting
-        self.add_hierarchical_paths(component_id, relationships);
-        
-        // Highlight read paths in blue
-        let read_paths = self.read_paths.clone();
-        for path in &read_paths {
-            self.highlight_path(path, EdgeType::ReadPath);
-        }
-        
-        // Highlight write paths in yellow
-        let write_paths = self.write_paths.clone();
-        for path in &write_paths {
-            self.highlight_path(path, EdgeType::WritePath);
-        }
-        
-        // Make sure the highlighted component and related components are visible
-        self.highlight_related_components(component_id);
+        self.add_component_paths(component_id, relationships);
+        self.apply_collected_paths();
     }
 
     pub fn clear_path_visualization(&mut self) {
         self.path_visualization_mode = false;
-        self.highlighted_component = None;
+        self.highlighted_components.clear();
         self.read_paths.clear();
         self.write_paths.clear();
         
@@ -616,6 +686,80 @@ impl ComponentGraph {
         self.selection.clear();
         self.dragging_node = None;
         self.drag_start_pos = None;
+    }
+    
+    /// Helper method to reset edges for clean path visualization
+    fn reset_edges_for_path_visualization(&mut self) {
+        for edge in &mut self.edges {
+            edge.edge_type = EdgeType::Normal;
+            edge.visible = false;
+        }
+    }
+    
+    /// Gets all current relationships from edges (internal state)
+    fn get_all_current_relationships(&self) -> Vec<Relationship> {
+        self.edges.iter().map(|edge| edge.relationship.clone()).collect()
+    }
+    
+    /// Adds paths for a single component to the current path collections
+    fn add_component_paths(&mut self, component_id: &str, relationships: &[Relationship]) {
+        // Find and add read paths
+        let component_read_paths = self.find_read_paths(component_id, relationships);
+        self.read_paths.extend(component_read_paths);
+        
+        // Find and add write paths
+        let component_write_paths = self.find_write_paths(component_id, relationships);
+        self.write_paths.extend(component_write_paths);
+        
+        // Add hierarchical paths
+        self.add_hierarchical_paths(component_id, relationships);
+    }
+    
+    /// Applies all collected paths to the visualization
+    fn apply_collected_paths(&mut self) {
+        // Highlight read paths in blue
+        let read_paths = self.read_paths.clone();
+        for path in &read_paths {
+            self.highlight_path(path, EdgeType::ReadPath);
+        }
+        
+        // Highlight write paths in yellow
+        let write_paths = self.write_paths.clone();
+        for path in &write_paths {
+            self.highlight_path(path, EdgeType::WritePath);
+        }
+        
+        // Highlight all related components
+        self.highlight_all_related_components();
+    }
+    
+    /// Highlights all components that appear in any path
+    fn highlight_all_related_components(&mut self) {
+        let all_component_ids: std::collections::HashSet<String> = self.read_paths
+            .iter()
+            .chain(self.write_paths.iter())
+            .flat_map(|path| path.iter())
+            .cloned()
+            .collect();
+            
+        for comp_id in all_component_ids {
+            if let Some(node) = self.nodes.get_mut(&comp_id) {
+                node.selected = true;
+            }
+            self.highlighted_components.insert(comp_id);
+        }
+    }
+    
+    /// Moves all highlighted/connected components together as a group
+    fn move_connected_group(&mut self, drag_delta: Vec2) {
+        let movement = drag_delta / self.zoom;
+        
+        // Move all highlighted components
+        for comp_id in &self.highlighted_components {
+            if let Some(node) = self.nodes.get_mut(comp_id) {
+                node.position += movement;
+            }
+        }
     }
 
     fn find_read_paths(&self, component_id: &str, relationships: &[Relationship]) -> Vec<Vec<String>> {

@@ -291,7 +291,17 @@ impl AnalyzerApp {
             
             if self.graph.path_visualization_mode {
                 ui.separator();
-                ui.label("📊 Path highlighting active");
+                ui.label("📊 Multi-selection active");
+                ui.label("💡 Click components to add/remove from selection");
+                ui.label("🖱️ Ctrl+drag to move connected groups");
+            }
+            
+            if !self.graph.selection.is_empty() {
+                let selection_count = self.graph.selection.len();
+                ui.label(format!("Selected: {} component{}", 
+                    selection_count, 
+                    if selection_count == 1 { "" } else { "s" }
+                ));
             }
             
             if let Some(selected_id) = self.selected_component.clone() {
@@ -322,26 +332,14 @@ impl AnalyzerApp {
         // Render graph
         self.graph.render(ui);
         
-        // Update selection from graph and auto-highlight paths
+        // Update selection from graph - the graph now handles path visualization internally
         let selected_components = self.graph.get_selected_components();
+        
+        // Update the app's selected component for detail view
         if let Some(first_selected) = selected_components.first() {
-            if self.selected_component.as_ref() != Some(&first_selected.id) {
-                let selected_id = first_selected.id.clone();
-                self.selected_component = Some(selected_id.clone());
-                
-                // Automatically show paths for newly selected component if enabled
-                if self.auto_highlight_paths {
-                    if let Err(e) = self.show_component_paths(&selected_id) {
-                        self.error_message = Some(format!("Failed to show paths: {}", e));
-                    }
-                }
-            }
-        } else if self.selected_component.is_some() {
-            // Clear paths when no component is selected (if auto-highlighting is enabled)
+            self.selected_component = Some(first_selected.id.clone());
+        } else if self.selected_component.is_some() && selected_components.is_empty() {
             self.selected_component = None;
-            if self.auto_highlight_paths {
-                self.graph.clear_path_visualization();
-            }
         }
     }
 }
