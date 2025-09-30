@@ -5,6 +5,8 @@ use crate::database::{ComponentQueries, RelationshipQueries, AnalysisQueries, Fu
 #[cfg(feature = "gui")]
 use crate::documentation::{DocumentationService, SyntaxHighlighter};
 #[cfg(feature = "gui")]
+use crate::documentation::lookup::DocumentationSource;
+#[cfg(feature = "gui")]
 use egui::{Ui, TextEdit, ComboBox, ScrollArea, CollapsingHeader, RichText, Color32};
 
 #[cfg(feature = "gui")]
@@ -172,21 +174,38 @@ impl ComponentDetailView {
                 let task = self.lookup_task.take().unwrap();
                 match task.join() {
                     Ok(Ok(Some(doc))) => {
-                        log::info!("Documentation lookup completed successfully");
+                        log::info!("Documentation lookup completed successfully for: {}", doc.function_name);
                         self.cached_documentation = Some(doc);
                         self.documentation_loading = false;
+                        
+                        // Save to database if we have a connection
+                        if let Some(conn) = db_conn {
+                            if let Some(cached_doc) = &self.cached_documentation {
+                                if let Err(e) = cached_doc.insert(conn) {
+                                    log::warn!("Failed to cache documentation in database: {}", e);
+                                } else {
+                                    log::debug!("Successfully cached documentation for: {}", cached_doc.function_name);
+                                }
+                            }
+                        }
                     },
                     Ok(Ok(None)) => {
                         log::warn!("Documentation lookup completed but no documentation found");
                         self.documentation_loading = false;
+                        self.render_no_documentation_found(ui);
+                        return;
                     },
                     Ok(Err(e)) => {
                         log::error!("Documentation lookup failed: {}", e);
                         self.documentation_loading = false;
+                        self.render_documentation_error(ui, &e.to_string());
+                        return;
                     },
                     Err(_) => {
                         log::error!("Documentation lookup task panicked");
                         self.documentation_loading = false;
+                        self.render_documentation_error(ui, "Documentation lookup task failed unexpectedly");
+                        return;
                     }
                 }
                 ui.ctx().request_repaint();
@@ -194,81 +213,348 @@ impl ComponentDetailView {
         }
 
         if let Some(doc) = &self.cached_documentation {
-            // Display cached documentation
+            // Display cached or newly fetched documentation with enhanced rendering
             self.render_documentation_content(ui, doc);
         } else if self.documentation_loading {
-            // Show loading indicator
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Loading documentation...");
+            // Show progress indicator with modern circular spinner
+            self.render_loading_state(ui);
+        } else {
+            // Automatically start lookup for function components
+            if let (Some(component), Some(conn)) = (&self.component, db_conn) {
+                let function_name = component.name.clone();
+                log::info!("Auto-starting documentation lookup for function: {}", function_name);
+                self.start_documentation_lookup(&function_name, conn);
+            } else {
+                // Show fallback message if no component or connection
+                self.render_no_component_selected(ui);
+            }
+        }
+    }
+
+    fn render_no_documentation_found(&self, ui: &mut Ui) {
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new("📚")
+                    .size(32.0));
+                ui.add_space(8.0);
+                ui.label(RichText::new("No Documentation Found")
+                    .size(16.0)
+                    .strong()
+                    .color(Color32::from_rgb(150, 150, 150)));
+                ui.add_space(4.0);
+                if let Some(component) = &self.component {
+                    ui.label(RichText::new(format!("Could not find documentation for '{}'", component.name))
+                        .size(12.0)
+                        .color(Color32::GRAY));
+                }
+                ui.add_space(8.0);
+                ui.label(RichText::new("Documentation sources checked but no results found.")
+                    .size(11.0)
+                    .color(Color32::GRAY));
+                ui.add_space(20.0);
             });
+        });
+    }
+
+    fn render_documentation_error(&self, ui: &mut Ui, error_message: &str) {
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new("⚠️")
+                    .size(32.0)
+                    .color(Color32::from_rgb(255, 165, 0)));
+                ui.add_space(8.0);
+                ui.label(RichText::new("Documentation Lookup Failed")
+                    .size(16.0)
+                    .strong()
+                    .color(Color32::from_rgb(255, 165, 0)));
+                ui.add_space(4.0);
+                ui.label(RichText::new(error_message)
+                    .size(11.0)
+                    .color(Color32::GRAY));
+                ui.add_space(8.0);
+                if ui.button("Retry Lookup").clicked() {
+                    if let (Some(component), Some(_)) = (&self.component, &self.component) {
+                        log::info!("User requested retry for documentation lookup: {}", component.name);
+                        // Note: Would need to restart lookup process here
+                    }
+                }
+                ui.add_space(20.0);
+            });
+        });
+    }
+
+    fn render_no_component_selected(&self, ui: &mut Ui) {
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(RichText::new("🔍")
+                    .size(32.0)
+                    .color(Color32::GRAY));
+                ui.add_space(8.0);
+                ui.label(RichText::new("Select a Function")
+                    .size(16.0)
+                    .strong()
+                    .color(Color32::GRAY));
+                ui.add_space(4.0);
+                ui.label(RichText::new("Choose a function component to view its documentation")
+                    .size(12.0)
+                    .color(Color32::GRAY));
+                ui.add_space(20.0);
+            });
+        });
+    }
+
+    fn render_loading_state(&mut self, ui: &mut Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(20.0);
             
-            // Show cancel button - note: can't easily cancel std::thread, but we can stop caring about the result
+            // Custom circular progress indicator
+            let (rect, _response) = ui.allocate_exact_size(egui::Vec2::splat(64.0), egui::Sense::hover());
+            
+            // Draw circular progress spinner
+            let painter = ui.painter_at(rect);
+            let center = rect.center();
+            let radius = 24.0;
+            let time = ui.input(|i| i.time) as f32;
+            let rotation = time * 2.0; // 2 radians per second
+            
+            // Background circle
+            painter.circle_stroke(
+                center,
+                radius,
+                egui::Stroke::new(3.0, egui::Color32::GRAY.linear_multiply(0.3))
+            );
+            
+            // Progress arc
+            let arc_length = std::f32::consts::PI * 1.5; // 3/4 circle
+            let start_angle = rotation;
+            
+            for i in 0..32 {
+                let angle = start_angle + (i as f32 / 32.0) * arc_length;
+                let alpha = (i as f32 / 31.0).powf(2.0); // Fade effect
+                let point = center + egui::Vec2::angled(angle) * radius;
+                let color = egui::Color32::from_rgb(70, 130, 200).linear_multiply(alpha);
+                painter.circle_filled(point, 2.0, color);
+            }
+            
+            ui.add_space(16.0);
+            
+            // Loading text with animated dots
+            let dots = match ((time * 2.0) as usize) % 4 {
+                0 => "",
+                1 => ".",
+                2 => "..",
+                3 => "...",
+                _ => "",
+            };
+            
+            ui.label(egui::RichText::new(format!("Looking up documentation{}", dots))
+                .size(16.0)
+                .color(egui::Color32::from_rgb(70, 130, 200)));
+            
+            ui.add_space(8.0);
+            
+            // Function name being looked up
+            if let Some(component) = &self.component {
+                ui.label(egui::RichText::new(&component.name)
+                    .size(14.0)
+                    .color(egui::Color32::GRAY)
+                    .monospace());
+            }
+            
+            ui.add_space(16.0);
+            
+            // Cancel button
             if ui.button("Cancel").clicked() {
                 self.lookup_task = None;
                 self.documentation_loading = false;
                 log::info!("Documentation lookup cancelled by user");
             }
-        } else {
-            // Show option to look up documentation
-            if ui.button("Look up documentation").clicked() {
-                if let (Some(component), Some(conn)) = (&self.component, db_conn) {
-                    let function_name = component.name.clone();
-                    log::info!("Starting documentation lookup for function: {}", function_name);
-                    self.start_documentation_lookup(&function_name, conn);
-                } else {
-                    log::error!("Cannot start documentation lookup: missing component or database connection");
-                }
-            }
-            ui.label("Click to search for function documentation online");
-        }
+            
+            ui.add_space(20.0);
+        });
+        
+        // Request repaint for animation
+        ui.ctx().request_repaint();
     }
 
     fn render_documentation_content(&self, ui: &mut Ui, doc: &FunctionDocumentation) {
-        // Function header with syntax highlighting
+        ui.add_space(8.0);
+        
+        // Enhanced header section with improved styling
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            
+            // Function name and source badge
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&doc.function_name)
+                    .size(18.0)
+                    .strong()
+                    .color(Color32::from_rgb(70, 130, 200)));
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Quality score badge
+                    let quality_color = if doc.quality_score > 0.8 {
+                        Color32::from_rgb(34, 139, 34)  // Green
+                    } else if doc.quality_score > 0.5 {
+                        Color32::from_rgb(255, 165, 0)  // Orange
+                    } else {
+                        Color32::from_rgb(220, 20, 60)   // Red
+                    };
+                    
+                    ui.label(RichText::new(format!("Quality: {:.1}/10", doc.quality_score * 10.0))
+                        .size(12.0)
+                        .color(quality_color));
+                        
+                    ui.separator();
+                    
+                    // Documentation source badge
+                    let source_text = match doc.documentation_type {
+                        crate::types::DocumentationType::WindowsAPI => "Windows API",
+                        crate::types::DocumentationType::StandardLibrary => "Standard Library",
+                        crate::types::DocumentationType::LinuxAPI => "Linux API",
+                        crate::types::DocumentationType::POSIX => "POSIX",
+                        crate::types::DocumentationType::Manual => "Manual Page",
+                        crate::types::DocumentationType::Official => "Official Docs",
+                        _ => "Documentation",
+                    };
+                    
+                    ui.label(RichText::new(source_text)
+                        .size(12.0)
+                        .color(Color32::from_rgb(100, 149, 237)));
+                });
+            });
+            
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("Platform: {}", doc.platform))
+                .size(12.0)
+                .color(Color32::GRAY));
+        });
+
+        ui.add_space(12.0);
+
+        // Function header with enhanced syntax highlighting
         if let Some(header) = &doc.header {
             if !header.is_empty() {
-                ui.label("Function Header:");
-                ui.separator();
-                
-                let highlighted_header = self.syntax_highlighter.highlight_c_header(header);
-                ui.horizontal_wrapped(|ui| {
-                    for (text, color) in highlighted_header {
-                        ui.add(egui::Label::new(RichText::new(text).color(color).monospace()));
-                    }
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Function Signature")
+                        .size(14.0)
+                        .strong()
+                        .color(Color32::from_rgb(70, 130, 200)));
+                    
+                    ui.add_space(8.0);
+                    
+                    // Code background
+                    let background_color = if ui.visuals().dark_mode {
+                        Color32::from_rgb(30, 30, 30)
+                    } else {
+                        Color32::from_rgb(248, 248, 248)
+                    };
+                    
+                    egui::Frame::none()
+                        .fill(background_color)
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(200, 200, 200)))
+                        .rounding(4.0)
+                        .inner_margin(12.0)
+                        .show(ui, |ui| {
+                            let highlighted_header = self.syntax_highlighter.highlight_c_header(header);
+                            ui.horizontal_wrapped(|ui| {
+                                for (text, color) in highlighted_header {
+                                    ui.add(egui::Label::new(RichText::new(text)
+                                        .color(color)
+                                        .monospace()
+                                        .size(13.0)));
+                                }
+                            });
+                        });
                 });
-                ui.add_space(10.0);
+                ui.add_space(12.0);
             }
         }
 
-        // Description
-        ui.label("Description:");
-        ui.separator();
-        ScrollArea::vertical()
-            .max_height(200.0)
-            .show(ui, |ui| {
-                ui.label(&doc.description);
+        // Enhanced description section
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Description")
+                .size(14.0)
+                .strong()
+                .color(Color32::from_rgb(70, 130, 200)));
+            
+            ui.add_space(8.0);
+            
+            ScrollArea::vertical()
+                .max_height(300.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width() - 16.0); // Account for scrollbar
+                    
+                    // Format description with better line breaks and paragraphs
+                    let formatted_description = doc.description
+                        .lines()
+                        .map(|line| line.trim())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    
+                    ui.label(RichText::new(formatted_description)
+                        .size(13.0)
+                        .color(if ui.visuals().dark_mode {
+                            Color32::from_rgb(220, 220, 220)
+                        } else {
+                            Color32::from_rgb(60, 60, 60)
+                        }));
+                });
+        });
+
+        ui.add_space(12.0);
+
+        // Enhanced footer with metadata and actions
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            
+            // Metadata row
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Cached:")
+                    .size(12.0)
+                    .color(Color32::GRAY));
+                ui.label(RichText::new(doc.lookup_timestamp.format("%Y-%m-%d %H:%M UTC").to_string())
+                    .size(12.0)
+                    .monospace());
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // External link button
+                    if let Some(url) = &doc.source_url {
+                        if ui.button(RichText::new("🔗 View Source")
+                            .size(12.0))
+                            .on_hover_text(format!("Open: {}", url))
+                            .clicked() {
+                            // Note: In a real implementation, we would open the URL
+                            log::info!("User requested to open URL: {}", url);
+                            println!("Would open: {}", url);
+                        }
+                    }
+                    
+                    ui.separator();
+                    
+                    // Refresh button
+                    if ui.button(RichText::new("🔄 Refresh")
+                        .size(12.0))
+                        .on_hover_text("Look up fresh documentation")
+                        .clicked() {
+                        log::info!("User requested documentation refresh for: {}", doc.function_name);
+                        // Note: In a real implementation, we would trigger a fresh lookup
+                        // This would require access to the database connection and lookup service
+                    }
+                });
             });
-
-        ui.add_space(5.0);
-
-        // Source information
-        ui.horizontal(|ui| {
-            ui.label(format!("Source: {:?}", doc.documentation_type));
-            if let Some(url) = &doc.source_url {
-                if ui.link("View online").clicked() {
-                    // Note: In a real implementation, we would open the URL
-                    println!("Would open: {}", url);
-                }
-            }
         });
-
-        ui.horizontal(|ui| {
-            ui.label(format!("Platform: {}", doc.platform));
-            ui.label(format!("Quality: {:.1}/10", doc.quality_score * 10.0));
-        });
-
-        ui.label(format!("Cached: {}", doc.lookup_timestamp.format("%Y-%m-%d %H:%M UTC")));
+        
+        ui.add_space(8.0);
     }
 
     fn start_documentation_lookup(&mut self, function_name: &str, _conn: &rusqlite::Connection) {
@@ -284,90 +570,86 @@ impl ComponentDetailView {
         
         log::info!("Creating async task for documentation lookup: {}", function_name);
         
-        // Create a background thread for the documentation lookup
+        // Create a background thread for the documentation lookup with real HTTP fetching
         let task = std::thread::spawn(move || {
             log::info!("Task started for function: {}", function_name_clone);
             
-            // Try to fetch real documentation using the documentation service
-            // Note: We need to create a temporary database connection since we can't pass the existing one
-            // In a production system, you'd want to use a connection pool or restructure this
+            // Create a Tokio runtime for HTTP requests within this thread
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("Failed to create Tokio runtime in thread: {}", e);
+                    return Err(anyhow::anyhow!("Failed to create Tokio runtime: {}", e));
+                }
+            };
             
-            use crate::types::{FunctionDocumentation, DocumentationType};
-            
-            log::info!("Attempting to fetch real documentation for: {}", function_name_clone);
-            
-            // Try different function patterns that might exist in documentation
-            let function_variants = vec![
-                function_name_clone.clone(),
-                function_name_clone.to_lowercase(),
-                function_name_clone.replace("_", ""),
-            ];
-            
-            for variant in function_variants {
-                log::debug!("Trying function variant: {}", variant);
+            // Use the actual documentation service with real HTTP lookup
+            rt.block_on(async move {
+                log::info!("Starting real documentation lookup for: {}", function_name_clone);
                 
-                // Simulate network lookup with a realistic delay
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Try the actual documentation service sources
+                let config = crate::types::DocumentationLookupConfig::default();
                 
-                // For common C functions, create realistic documentation
-                let (header, description) = match variant.as_str() {
-                    "strlen" => (
-                        "size_t strlen(const char *s)".to_string(),
-                        "The strlen() function computes the length of the string pointed to by s, excluding the terminating null byte ('\\0'). Returns the number of characters in the string pointed to by s.".to_string()
-                    ),
-                    "malloc" => (
-                        "void *malloc(size_t size)".to_string(),
-                        "The malloc() function allocates size bytes and returns a pointer to the allocated memory. The memory is not initialized. If size is 0, then malloc() returns either NULL, or a unique pointer value that can later be successfully passed to free().".to_string()
-                    ),
-                    "free" => (
-                        "void free(void *ptr)".to_string(),
-                        "The free() function frees the memory space pointed to by ptr, which must have been returned by a previous call to malloc(), calloc(), or realloc(). Otherwise, or if free(ptr) has already been called before, undefined behavior occurs.".to_string()
-                    ),
-                    "printf" => (
-                        "int printf(const char *format, ...)".to_string(),
-                        "The printf() function writes output to stdout, the standard output stream. The function writes the output under the control of a format string that specifies how subsequent arguments are converted for output.".to_string()
-                    ),
-                    "fopen" => (
-                        "FILE *fopen(const char *pathname, const char *mode)".to_string(),
-                        "The fopen() function opens the file whose name is the string pointed to by pathname and associates a stream with it. The argument mode points to a string beginning with one of the following sequences.".to_string()
-                    ),
-                    "ntlockfile" | "NtLockFile" => (
-                        "NTSTATUS NtLockFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext, PIO_STATUS_BLOCK IoStatusBlock, PLARGE_INTEGER ByteOffset, PLARGE_INTEGER Length, ULONG Key, BOOLEAN FailImmediately, BOOLEAN ExclusiveLock)".to_string(),
-                        "The NtLockFile routine requests a byte-range lock for the specified file. This is a Windows NT native API function used to lock regions of a file for exclusive or shared access.".to_string()
-                    ),
-                    "createfile" | "CreateFile" | "createfilea" | "CreateFileA" => (
-                        "HANDLE CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile)".to_string(),
-                        "Creates or opens a file or I/O device. The most commonly used I/O devices are as follows: file, file stream, directory, physical disk, volume, console buffer, tape drive, communications resource, mailslot, and pipe.".to_string()
-                    ),
-                    _ => {
-                        log::debug!("No specific documentation found for variant: {}", variant);
-                        continue;
+                // Try different sources in order
+                let sources = vec![
+                    crate::types::DocumentationType::WindowsAPI,
+                    crate::types::DocumentationType::StandardLibrary,
+                    crate::types::DocumentationType::LinuxAPI,
+                    crate::types::DocumentationType::POSIX,
+                    crate::types::DocumentationType::Manual,
+                ];
+                
+                for doc_type in sources {
+                    log::debug!("Trying documentation source: {:?}", doc_type);
+                    
+                    let result = match doc_type {
+                        crate::types::DocumentationType::WindowsAPI => {
+                            crate::documentation::WindowsAPISource::search(&function_name_clone, "windows", &config).await
+                        },
+                        crate::types::DocumentationType::StandardLibrary => {
+                            crate::documentation::StandardLibrarySource::search(&function_name_clone, "generic", &config).await
+                        },
+                        crate::types::DocumentationType::LinuxAPI => {
+                            crate::documentation::LinuxAPISource::search(&function_name_clone, "linux", &config).await
+                        },
+                        crate::types::DocumentationType::POSIX => {
+                            crate::documentation::POSIXSource::search(&function_name_clone, "posix", &config).await
+                        },
+                        crate::types::DocumentationType::Manual => {
+                            crate::documentation::ManualPageSource::search(&function_name_clone, "unix", &config).await
+                        },
+                        _ => Ok(None),
+                    };
+                    
+                    match result {
+                        Ok(Some(search_result)) => {
+                            log::info!("Found documentation from {:?} source", doc_type);
+                            
+                            // Convert search result to FunctionDocumentation
+                            let doc = crate::types::FunctionDocumentation::new(
+                                search_result.function_name,
+                                search_result.platform,
+                                search_result.description,
+                                search_result.documentation_type,
+                            )
+                            .with_header(search_result.header.unwrap_or_default())
+                            .with_source_url(search_result.source_url)
+                            .with_quality_score(search_result.quality_score);
+                            
+                            return Ok(Some(doc));
+                        },
+                        Ok(None) => {
+                            log::debug!("No documentation found from {:?} source", doc_type);
+                        },
+                        Err(e) => {
+                            log::warn!("Error searching {:?} source: {}", doc_type, e);
+                        }
                     }
-                };
+                }
                 
-                log::info!("Found documentation for function variant: {}", variant);
-                
-                let doc = FunctionDocumentation::new(
-                    function_name_clone.clone(),
-                    "generic".to_string(),
-                    description,
-                    if variant.starts_with("Nt") || variant.starts_with("nt") { 
-                        DocumentationType::WindowsAPI 
-                    } else if variant.starts_with("Create") || variant.starts_with("create") {
-                        DocumentationType::WindowsAPI
-                    } else { 
-                        DocumentationType::StandardLibrary 
-                    },
-                )
-                .with_header(header)
-                .with_quality_score(0.9);
-                
-                log::info!("Successfully created documentation for: {}", function_name_clone);
-                return Ok(Some(doc));
-            }
-            
-            log::warn!("No documentation found for any variant of function: {}", function_name_clone);
-            Ok(None)
+                log::warn!("No documentation found for function: {}", function_name_clone);
+                Ok(None)
+            })
         });
         
         self.lookup_task = Some(task);

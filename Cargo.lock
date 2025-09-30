@@ -822,6 +822,7 @@ dependencies = [
  "log",
  "num_cpus",
  "petgraph",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

@@ -48,6 +48,9 @@ futures = "0.3"
 # HTTP client for documentation lookup
 reqwest = { version = "0.11", features = ["json"] }
 
+# Regular expressions for parsing
+regex = "1.10"
+
 # Syntax highlighting
 syntect = { version = "5.1", optional = true }
 
