@@ -8,6 +8,17 @@ use crate::documentation::{DocumentationService, SyntaxHighlighter};
 use crate::documentation::lookup::DocumentationSource;
 #[cfg(feature = "gui")]
 use egui::{Ui, TextEdit, ComboBox, ScrollArea, CollapsingHeader, RichText, Color32};
+#[cfg(feature = "gui")]
+use std::collections::{HashSet, HashMap};
+#[cfg(feature = "gui")]
+use std::sync::{Arc, Mutex};
+
+// Global cache to prevent duplicate HTTP requests across all instances
+static URL_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<String, Option<String>>>>> = std::sync::OnceLock::new();
+
+fn get_url_cache() -> &'static Arc<Mutex<HashMap<String, Option<String>>>> {
+    URL_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
 
 #[cfg(feature = "gui")]
 pub struct ComponentDetailView {
@@ -22,6 +33,7 @@ pub struct ComponentDetailView {
     lookup_task: Option<std::thread::JoinHandle<anyhow::Result<Option<FunctionDocumentation>>>>,
     lookup_task_component_id: Option<String>, // Track which component the task is for
     lookup_result: Option<anyhow::Result<Option<FunctionDocumentation>>>,
+    lookup_in_progress_global: bool, // Global flag to prevent any lookups
 }
 
 #[cfg(feature = "gui")]
@@ -39,6 +51,7 @@ impl ComponentDetailView {
             lookup_task: None,
             lookup_task_component_id: None,
             lookup_result: None,
+            lookup_in_progress_global: false,
         }
     }
 
@@ -67,6 +80,7 @@ impl ComponentDetailView {
         self.lookup_task = None;
         self.lookup_task_component_id = None;
         self.lookup_result = None;
+        self.lookup_in_progress_global = false;
 
         if was_loading || had_task {
             log::debug!("Cancelled ongoing documentation lookup when switching to component: {}", component.name);
@@ -74,12 +88,27 @@ impl ComponentDetailView {
 
         // If this is a function component, try to load cached documentation
         if component.component_type == ComponentType::Function {
-            if let Ok(Some(doc)) = FunctionDocumentationQueries::get_by_function_name(conn, &component.name) {
-                log::debug!("Found cached documentation for function: {}", component.name);
-                self.cached_documentation = Some(doc);
-            } else {
-                log::debug!("No cached documentation found for function: {}", component.name);
+            log::info!("Setting function component: {} (type: {:?})", component.name, component.component_type);
+            
+            // Check database for existing documentation
+            match FunctionDocumentationQueries::get_by_function_name(conn, &component.name) {
+                Ok(Some(doc)) => {
+                    log::info!("✅ Found cached documentation in database for function: {} (source: {:?}, platform: {})", 
+                        component.name, doc.documentation_type, doc.platform);
+                    self.cached_documentation = Some(doc);
+                },
+                Ok(None) => {
+                    log::info!("📖 No cached documentation found in database for function: {}", component.name);
+                    self.cached_documentation = None;
+                },
+                Err(e) => {
+                    log::error!("❌ Database error checking for documentation for function {}: {}", component.name, e);
+                    self.cached_documentation = None;
+                }
             }
+        } else {
+            log::debug!("Component {} is not a function (type: {:?}), skipping documentation lookup", component.name, component.component_type);
+            self.cached_documentation = None;
         }
 
         self.component = Some(component);
@@ -174,9 +203,20 @@ impl ComponentDetailView {
 
             // Function Documentation (only for function components)
             if component.component_type == ComponentType::Function {
+                let component_name = component.name.clone();
+                log::debug!("Showing function documentation section for: {}", component_name);
                 CollapsingHeader::new("Function Documentation").show(ui, |ui| {
+                    // Debug logging for documentation section
+                    log::debug!("Rendering documentation section for: {} (cached: {}, loading: {}, error: {})", 
+                        component_name, 
+                        self.cached_documentation.is_some(),
+                        self.documentation_loading,
+                        self.documentation_error.is_some());
+                    
                     self.render_documentation_section(ui, db_conn);
                 });
+            } else {
+                log::debug!("Component {} is not a function, skipping documentation section", component.name);
             }
         } else {
             ui.label("No component selected");
@@ -196,35 +236,59 @@ impl ComponentDetailView {
                 match task.join() {
                     Ok(Ok(Some(doc))) => {
                         log::info!("Documentation lookup completed successfully for: {}", doc.function_name);
+                        
+                        // Print documentation content to console for debugging
+                        println!("\n=== DOCUMENTATION FOUND FOR {} ===", doc.function_name);
+                        println!("Source: {:?}", doc.documentation_type);
+                        println!("Platform: {}", doc.platform);
+                        println!("Quality Score: {:.2}", doc.quality_score);
+                        if let Some(ref header) = doc.header {
+                            println!("Header: {}", header);
+                        }
+                        println!("Description: {}", doc.description);
+                        if let Some(ref url) = doc.source_url {
+                            println!("Source URL: {}", url);
+                        }
+                        println!("=====================================\n");
+                        
                         self.cached_documentation = Some(doc);
                         self.documentation_loading = false;
                         self.documentation_error = None;
+                        self.lookup_in_progress_global = false;
                         
-                        // Save to database if we have a connection
+                        // Save to database immediately if we have a connection
                         if let Some(conn) = db_conn {
                             if let Some(cached_doc) = &self.cached_documentation {
-                                if let Err(e) = cached_doc.insert(conn) {
-                                    log::warn!("Failed to cache documentation in database: {}", e);
-                                } else {
-                                    log::debug!("Successfully cached documentation for: {}", cached_doc.function_name);
+                                match cached_doc.insert(conn) {
+                                    Ok(_) => {
+                                        log::info!("✅ Successfully saved documentation to database for: {}", cached_doc.function_name);
+                                    },
+                                    Err(e) => {
+                                        log::error!("❌ Failed to save documentation to database for {}: {}", cached_doc.function_name, e);
+                                    }
                                 }
                             }
+                        } else {
+                            log::warn!("No database connection available to save documentation");
                         }
                     },
                     Ok(Ok(None)) => {
                         log::warn!("Documentation lookup completed but no documentation found");
                         self.documentation_loading = false;
                         self.documentation_error = Some("No documentation found".to_string());
+                        self.lookup_in_progress_global = false;
                     },
                     Ok(Err(e)) => {
                         log::error!("Documentation lookup failed: {}", e);
                         self.documentation_loading = false;
                         self.documentation_error = Some(e.to_string());
+                        self.lookup_in_progress_global = false;
                     },
                     Err(_) => {
                         log::error!("Documentation lookup task panicked");
                         self.documentation_loading = false;
                         self.documentation_error = Some("Documentation lookup task failed unexpectedly".to_string());
+                        self.lookup_in_progress_global = false;
                     }
                 }
             } else {
@@ -236,6 +300,7 @@ impl ComponentDetailView {
                         self.lookup_task_component_id = None;
                         self.documentation_loading = false;
                         self.documentation_error = None;
+                        self.lookup_in_progress_global = false;
                     }
                 }
             }
@@ -259,19 +324,24 @@ impl ComponentDetailView {
                 let task_for_current_component = self.lookup_task_component_id.as_ref() == Some(&component.id);
                 
                 // Debug current state
-                log::debug!("Documentation state check for {}: loading={}, task_exists={}, error_exists={}, task_for_current={}", 
+                log::debug!("Documentation state check for {}: loading={}, task_exists={}, error_exists={}, task_for_current={}, task_component_id={:?}", 
                     component.name,
                     self.documentation_loading, 
                     self.lookup_task.is_some(),
                     self.documentation_error.is_some(),
-                    task_for_current_component);
+                    task_for_current_component,
+                    self.lookup_task_component_id);
                 
                 // Only start lookup if:
-                // 1. No task is currently running, AND
-                // 2. We're not in a loading state, AND  
-                // 3. There's no error state, AND
-                // 4. Either no task component ID is set OR it's not for the current component
-                let should_start_lookup = !self.documentation_loading 
+                // 0. We don't already have cached documentation, AND
+                // 1. Global flag is not set, AND
+                // 2. No task is currently running, AND
+                // 3. We're not in a loading state, AND  
+                // 4. There's no error state, AND
+                // 5. Either no task component ID is set OR it's not for the current component
+                let should_start_lookup = self.cached_documentation.is_none()
+                    && !self.lookup_in_progress_global
+                    && !self.documentation_loading 
                     && self.lookup_task.is_none() 
                     && self.documentation_error.is_none() 
                     && !task_for_current_component;
@@ -279,10 +349,17 @@ impl ComponentDetailView {
                 if should_start_lookup {
                     let function_name = component.name.clone();
                     let component_id = component.id.clone();
-                    log::info!("Auto-starting documentation lookup for function: {}", function_name);
+                    log::info!("🔍 Auto-starting documentation lookup for function: {} (no cached documentation available)", function_name);
                     self.start_documentation_lookup(&function_name, &component_id, conn);
                 } else {
-                    log::debug!("Skipping lookup start - conditions not met");
+                    if self.cached_documentation.is_some() {
+                        log::debug!("✅ Using cached documentation, no lookup needed");
+                    } else {
+                        log::debug!("⏸️ Skipping lookup start - conditions not met (loading: {}, task: {}, error: {})", 
+                            self.documentation_loading,
+                            self.lookup_task.is_some(), 
+                            self.documentation_error.is_some());
+                    }
                 }
             } else {
                 // Show fallback message if no component or connection
@@ -344,6 +421,7 @@ impl ComponentDetailView {
                         self.documentation_loading = false;
                         self.lookup_task = None;
                         self.lookup_task_component_id = None;
+                        self.lookup_in_progress_global = false;
                     }
                 }
                 ui.add_space(20.0);
@@ -438,6 +516,7 @@ impl ComponentDetailView {
                 self.lookup_task = None;
                 self.lookup_task_component_id = None;
                 self.documentation_loading = false;
+                self.lookup_in_progress_global = false;
                 log::info!("Documentation lookup cancelled by user");
             }
             
@@ -622,23 +701,48 @@ impl ComponentDetailView {
     }
 
     fn start_documentation_lookup(&mut self, function_name: &str, component_id: &str, _conn: &rusqlite::Connection) {
-        // Safety guard: prevent multiple concurrent lookups
-        if self.documentation_loading || self.lookup_task.is_some() {
-            log::warn!("Documentation lookup already in progress for: {}, ignoring duplicate request", function_name);
+        // CRITICAL: Ultra-strong safety guards to prevent infinite loops
+        
+        // Guard 0: Global lookup prevention flag
+        if self.lookup_in_progress_global {
+            log::warn!("GUARD 0 TRIGGERED: Global lookup in progress flag set for: {}, BLOCKING", function_name);
             return;
         }
-
-        // Additional safety: check if we already have a task for this specific component
+        
+        // Guard 1: Check if already loading
+        if self.documentation_loading {
+            log::warn!("GUARD 1 TRIGGERED: Documentation lookup already loading for: {}, BLOCKING", function_name);
+            return;
+        }
+        
+        // Guard 2: Check if task exists
+        if self.lookup_task.is_some() {
+            log::warn!("GUARD 2 TRIGGERED: Documentation lookup task already exists for: {}, BLOCKING", function_name);
+            return;
+        }
+        
+        // Guard 3: Check if task is for same component
         if let Some(existing_component_id) = &self.lookup_task_component_id {
             if existing_component_id == component_id {
-                log::warn!("Documentation lookup already in progress for component: {}, ignoring duplicate request", component_id);
+                log::warn!("GUARD 3 TRIGGERED: Documentation lookup already in progress for component: {}, BLOCKING", component_id);
                 return;
             }
         }
+        
+        // Guard 4: Final state validation
+        if self.documentation_loading || self.lookup_task.is_some() || 
+           (self.lookup_task_component_id.is_some() && self.lookup_task_component_id.as_ref().unwrap() == component_id) {
+            log::warn!("GUARD 4 TRIGGERED: Final validation failed, state inconsistent for: {}, BLOCKING", function_name);
+            return;
+        }
 
-        log::info!("Starting documentation lookup for function: {} (component: {})", function_name, component_id);
+        log::info!("ALL GUARDS PASSED - Starting documentation lookup for function: {} (component: {})", function_name, component_id);
+        
+        // Set ALL state variables IMMEDIATELY to prevent any race conditions
+        self.lookup_in_progress_global = true;  // CRITICAL: Set this first
         self.documentation_loading = true;
         self.lookup_task_component_id = Some(component_id.to_string());
+        self.documentation_error = None; // Clear any previous error
         
         // Clone necessary data for the async task
         let function_name_clone = function_name.to_string();
@@ -657,87 +761,117 @@ impl ComponentDetailView {
             // Use a synchronous HTTP client to avoid Tokio runtime resource issues
             log::info!("Starting HTTP documentation lookup for: {}", function_name_clone);
             
-            // Try different documentation sources in order
-            let sources = [
-                ("Windows API", "https://learn.microsoft.com/en-us/windows/win32/api/"),
-                ("C Standard Library", "https://en.cppreference.com/w/c/"),
-                ("Linux Manual", "https://man7.org/linux/man-pages/"),
-            ];
+            // Comprehensive documentation sources for different function types
+            let sources = if function_name_clone.starts_with("Nt") || function_name_clone.starts_with("Zw") {
+                vec![
+                    // Windows NT Native API sources
+                    ("Microsoft Learn", "https://learn.microsoft.com/en-us/windows/win32/api/"),
+                    ("NT Internals", "https://undocumented.ntinternals.net/"),
+                    ("Process Hacker", "https://processhacker.sourceforge.io/doc/"),
+                    ("ReactOS", "https://doxygen.reactos.org/"),
+                    ("Windows Driver Kit", "https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/"),
+                    ("MSDN Archive", "https://web.archive.org/web/20201109000000*/https://docs.microsoft.com/"),
+                ]
+            } else if ["CreateFile", "ReadFile", "WriteFile", "CloseHandle", "GetLastError"].iter().any(|&f| function_name_clone.contains(f)) {
+                vec![
+                    // Win32 API sources
+                    ("Microsoft Learn", "https://learn.microsoft.com/en-us/windows/win32/api/"),
+                    ("Win32 API Documentation", "https://docs.microsoft.com/en-us/windows/win32/"),
+                    ("MSDN Library", "https://msdn.microsoft.com/en-us/library/"),
+                    ("Windows Dev Center", "https://developer.microsoft.com/en-us/windows/"),
+                ]
+            } else if ["strlen", "strcpy", "malloc", "free", "printf", "scanf", "memcpy", "strncpy"].contains(&function_name_clone.as_str()) {
+                vec![
+                    // C Standard Library sources
+                    ("cppreference", "https://en.cppreference.com/w/c/"),
+                    ("GNU C Library", "https://www.gnu.org/software/libc/manual/html_node/"),
+                    ("C11 Standard", "https://port70.net/~nsz/c/c11/"),
+                    ("tutorialspoint", "https://www.tutorialspoint.com/c_standard_library/"),
+                ]
+            } else {
+                vec![
+                    // Generic/Linux sources
+                    ("Linux Manual Pages", "https://man7.org/linux/man-pages/"),
+                    ("Linux Kernel", "https://www.kernel.org/doc/html/latest/"),
+                    ("GNU C Library", "https://www.gnu.org/software/libc/manual/html_node/"),
+                    ("Ubuntu Manpages", "https://manpages.ubuntu.com/"),
+                ]
+            };
+            
+            // Collect all URLs from all sources and deduplicate globally
+            let mut all_urls = HashSet::new();
+            let mut source_url_map = std::collections::HashMap::new();
             
             for (source_name, base_url) in &sources {
-                log::debug!("Trying documentation source: {}", source_name);
+                log::debug!("Preparing documentation source: {}", source_name);
                 
-                // Create URL patterns based on function name and source
-                let search_urls = match source_name {
-                    &"Windows API" if function_name_clone.starts_with("Nt") || function_name_clone.starts_with("Zw") => {
-                        vec![
-                            format!("{}ntdll/{}.html", base_url, function_name_clone.to_lowercase()),
-                            format!("{}winbase/{}.html", base_url, function_name_clone.to_lowercase()),
-                        ]
-                    },
-                    &"C Standard Library" if ["strlen", "strcpy", "malloc", "free", "printf", "scanf", "memcpy", "strncpy"].contains(&function_name_clone.as_str()) => {
-                        vec![
-                            format!("{}string/{}", base_url, function_name_clone),
-                            format!("{}memory/{}", base_url, function_name_clone),
-                            format!("{}io/{}", base_url, function_name_clone),
-                        ]
-                    },
-                    &"Linux Manual" => {
-                        vec![
-                            format!("{}man2/{}.2.html", base_url, function_name_clone),
-                            format!("{}man3/{}.3.html", base_url, function_name_clone),
-                        ]
-                    },
-                    _ => vec![], // Skip this source for this function
-                };
+                // Generate comprehensive URL patterns for each source
+                let search_urls = generate_search_urls(&function_name_clone, source_name, base_url);
                 
-                for url in search_urls {
-                    log::debug!("Attempting to fetch: {}", url);
-                    
-                    // Try to fetch the URL with a simple HTTP client
-                    match std::process::Command::new("curl")
-                        .arg("-s")
-                        .arg("--max-time")
-                        .arg("5")
-                        .arg(&url)
-                        .output()
-                    {
-                        Ok(output) if output.status.success() => {
-                            let content = String::from_utf8_lossy(&output.stdout);
-                            if content.len() > 100 && !content.contains("404") && !content.contains("Not Found") {
-                                log::info!("Successfully fetched documentation from: {}", url);
-                                
-                                // Extract meaningful description from HTML content
-                                let description = extract_description_from_html(&content, &function_name_clone);
-                                
-                                let doc_type = match source_name {
-                                    &"Windows API" => crate::types::DocumentationType::WindowsAPI,
-                                    &"C Standard Library" => crate::types::DocumentationType::StandardLibrary,
-                                    &"Linux Manual" => crate::types::DocumentationType::LinuxAPI,
-                                    _ => crate::types::DocumentationType::Manual,
-                                };
-                                
-                                let doc = crate::types::FunctionDocumentation::new(
-                                    function_name_clone.clone(),
-                                    determine_platform(&function_name_clone, source_name),
-                                    description,
-                                    doc_type,
-                                )
-                                .with_header(extract_function_header(&content, &function_name_clone))
-                                .with_source_url(url)
-                                .with_quality_score(0.8);
-                                
-                                return Ok(Some(doc));
-                            }
-                        },
-                        Ok(_) => {
-                            log::debug!("Failed to fetch from URL (non-success status): {}", url);
-                        },
-                        Err(e) => {
-                            log::debug!("Error fetching URL {}: {}", url, e);
+                log::debug!("Generated {} URLs for source {}: {:?}", search_urls.len(), source_name, search_urls);
+                
+                if !search_urls.is_empty() {
+                    // Track which URLs belong to which source
+                    for url in &search_urls {
+                        if all_urls.insert(url.clone()) {
+                            source_url_map.insert(url.clone(), source_name.clone());
+                        } else {
+                            log::debug!("Skipping duplicate URL {} for source {}", url, source_name);
                         }
                     }
                 }
+            }
+            
+            log::info!("Total unique URLs to try: {}", all_urls.len());
+            
+            // Try sources in parallel using multiple threads to get faster results
+            let mut search_tasks = vec![];
+            
+            for (source_name, base_url) in &sources {
+                // Generate comprehensive URL patterns for each source
+                let search_urls = generate_search_urls(&function_name_clone, source_name, base_url);
+                
+                if !search_urls.is_empty() {
+                    let source_name_clone = source_name.to_string();
+                    let source_name_for_task = source_name_clone.clone();
+                    let function_name_for_task = function_name_clone.clone();
+                    
+                    // Create a task for this source
+                    let task = std::thread::spawn(move || {
+                        log::debug!("Starting lookup for source: {}", source_name_for_task);
+                        try_documentation_source(&function_name_for_task, &source_name_for_task, &search_urls)
+                    });
+                    
+                    search_tasks.push((source_name_clone, task));
+                }
+            }
+            
+            // Wait for the first successful result or collect all results
+            let mut best_result = None;
+            let mut all_results = vec![];
+            
+            for (source_name, task) in search_tasks {
+                match task.join() {
+                    Ok(Some(result)) => {
+                        log::info!("Successfully got documentation from: {}", source_name);
+                        all_results.push((source_name.clone(), result.clone()));
+                        
+                        if best_result.is_none() {
+                            best_result = Some(result);
+                        }
+                    },
+                    Ok(None) => {
+                        log::debug!("No documentation found from: {}", source_name);
+                    },
+                    Err(e) => {
+                        log::warn!("Error in documentation task for {}: {:?}", source_name, e);
+                    }
+                }
+            }
+            
+            // Select the best result based on content quality
+            if let Some(result) = best_result.or_else(|| select_best_documentation_result(all_results)) {
+                return Ok(Some(result));
             }
             
             log::info!("No documentation found for function: {}", function_name_clone);
@@ -747,6 +881,305 @@ impl ComponentDetailView {
         self.lookup_task = Some(task);
         log::info!("Documentation lookup task started for: {}", function_name);
     }
+}
+
+// Generate comprehensive search URLs for different documentation sources
+fn generate_search_urls(function_name: &str, source_name: &str, base_url: &str) -> Vec<String> {
+    match source_name {
+        "Microsoft Learn" => {
+            if function_name.starts_with("Nt") || function_name.starts_with("Zw") {
+                vec![
+                    // NT Native API patterns
+                    format!("{}/winternl/nf-winternl-{}", base_url, function_name.to_lowercase()),
+                    format!("{}/ntdll/nf-ntdll-{}", base_url, function_name.to_lowercase()),
+                    format!("{}/winbase/nf-winbase-{}", base_url, function_name.to_lowercase()),
+                    format!("{}/processthreadsapi/nf-processthreadsapi-{}", base_url, function_name.to_lowercase()),
+                    format!("{}/fileapi/nf-fileapi-{}", base_url, function_name.to_lowercase()),
+                    // Search patterns
+                    format!("{}search?query={}", base_url, function_name),
+                ]
+            } else {
+                vec![
+                    // Regular Win32 API patterns
+                    format!("{}/fileapi/nf-fileapi-{}", base_url, function_name.to_lowercase()),
+                    format!("{}/processthreadsapi/nf-processthreadsapi-{}", base_url, function_name.to_lowercase()),
+                    format!("{}/winbase/nf-winbase-{}", base_url, function_name.to_lowercase()),
+                    format!("{}/handleapi/nf-handleapi-{}", base_url, function_name.to_lowercase()),
+                    format!("{}search?query={}", base_url, function_name),
+                ]
+            }
+        },
+        "NT Internals" => {
+            vec![
+                format!("{}/UserMode/Undocumented%20Functions/NT%20Objects/File/{}.html", base_url, function_name),
+                format!("{}/UserMode/Undocumented%20Functions/NT%20Objects/Process/{}.html", base_url, function_name),
+                format!("{}/UserMode/Undocumented%20Functions/Executive/{}.html", base_url, function_name),
+            ]
+        },
+        "ReactOS" => {
+            vec![
+                format!("{}/group__{}.html", base_url, function_name.to_lowercase()),
+                format!("{}/{}__8c.html", base_url, function_name.to_lowercase()),
+            ]
+        },
+        "Windows Driver Kit" => {
+            vec![
+                format!("{}/ntddk/nf-ntddk-{}", base_url, function_name.to_lowercase()),
+                format!("{}/wdm/nf-wdm-{}", base_url, function_name.to_lowercase()),
+                format!("{}/ntifs/nf-ntifs-{}", base_url, function_name.to_lowercase()),
+            ]
+        },
+        "cppreference" => {
+            // Correct cppreference URLs for common C functions
+            match function_name {
+                "strlen" | "strnlen" => vec![
+                    format!("{}/string/byte/strlen", base_url),
+                ],
+                "strcpy" | "strncpy" => vec![
+                    format!("{}/string/byte/strcpy", base_url),
+                ],
+                "strcmp" | "strncmp" => vec![
+                    format!("{}/string/byte/strcmp", base_url),
+                ],
+                "malloc" | "calloc" | "realloc" | "free" => vec![
+                    format!("{}/memory/malloc", base_url),
+                    format!("{}/memory/free", base_url),
+                ],
+                "memcpy" | "memmove" => vec![
+                    format!("{}/string/byte/memcpy", base_url),
+                ],
+                "memset" => vec![
+                    format!("{}/string/byte/memset", base_url),
+                ],
+                "printf" | "sprintf" | "fprintf" => vec![
+                    format!("{}/io/fprintf", base_url),
+                ],
+                "scanf" | "sscanf" | "fscanf" => vec![
+                    format!("{}/io/fscanf", base_url),
+                ],
+                _ => vec![
+                    // Generic patterns for unknown functions
+                    format!("{}/string/byte/{}", base_url, function_name),
+                    format!("{}/memory/{}", base_url, function_name),
+                    format!("{}/io/{}", base_url, function_name),
+                ]
+            }
+        },
+        "Linux Manual Pages" => {
+            vec![
+                format!("{}/man2/{}.2.html", base_url, function_name),
+                format!("{}/man3/{}.3.html", base_url, function_name),
+                format!("{}/man7/{}.7.html", base_url, function_name),
+            ]
+        },
+        _ => vec![],
+    }
+}
+
+// Try a single documentation source with multiple URLs
+fn try_documentation_source(function_name: &str, source_name: &str, search_urls: &[String]) -> Option<crate::types::FunctionDocumentation> {
+    // Deduplicate URLs to prevent multiple requests to same endpoint
+    let mut unique_urls = std::collections::HashSet::new();
+    let mut deduped_urls = Vec::new();
+    
+    for url in search_urls {
+        if unique_urls.insert(url.clone()) {
+            deduped_urls.push(url.clone());
+        }
+    }
+    
+    log::debug!("Trying {} unique URLs for {} from {}", deduped_urls.len(), function_name, source_name);
+    
+    for url in &deduped_urls {
+        // Check global URL cache first
+        {
+            let cache = get_url_cache().lock().unwrap();
+            if let Some(cached_content) = cache.get(url) {
+                if let Some(content) = cached_content {
+                    log::info!("Using cached content for URL: {}", url);
+                    
+                    // Process cached content
+                    if is_valid_documentation_content(content, function_name) {
+                        let description = extract_description_from_html(content, function_name);
+                        let header = extract_function_header(content, function_name);
+                        
+                        if description.len() >= 20 {
+                            let doc_type = match source_name {
+                                s if s.contains("Microsoft") || s.contains("Windows") => crate::types::DocumentationType::WindowsAPI,
+                                s if s.contains("cppreference") || s.contains("GNU") => crate::types::DocumentationType::StandardLibrary,
+                                s if s.contains("Linux") || s.contains("Ubuntu") => crate::types::DocumentationType::LinuxAPI,
+                                _ => crate::types::DocumentationType::Manual,
+                            };
+                            
+                            let quality_score = calculate_content_quality(content, function_name, source_name);
+                            
+                            let doc = crate::types::FunctionDocumentation::new(
+                                function_name.to_string(),
+                                determine_platform(function_name, source_name),
+                                description,
+                                doc_type,
+                            )
+                            .with_header(header)
+                            .with_source_url(url.clone())
+                            .with_quality_score(quality_score);
+                            
+                            return Some(doc);
+                        }
+                    }
+                } else {
+                    log::debug!("URL {} is cached as failed, skipping", url);
+                    continue;
+                }
+            }
+        }
+        
+        log::debug!("Fetching URL: {}", url);
+        
+        // Try to fetch the URL with curl
+        match std::process::Command::new("curl")
+            .arg("-s")
+            .arg("--max-time")
+            .arg("10")
+            .arg("--user-agent")
+            .arg("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .arg(url)
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let content = String::from_utf8_lossy(&output.stdout).to_string();
+                
+                // Cache the content (successful fetch)
+                {
+                    let mut cache = get_url_cache().lock().unwrap();
+                    cache.insert(url.clone(), Some(content.clone()));
+                }
+                
+                // More sophisticated content validation
+                if is_valid_documentation_content(&content, function_name) {
+                    log::info!("Successfully fetched documentation from: {}", url);
+                    
+                    let description = extract_description_from_html(&content, function_name);
+                    let header = extract_function_header(&content, function_name);
+                    
+                    // Skip if we couldn't extract meaningful content
+                    if description.len() < 20 {
+                        log::debug!("Extracted description too short, trying next URL");
+                        continue;
+                    }
+                    
+                    let doc_type = match source_name {
+                        s if s.contains("Microsoft") || s.contains("Windows") => crate::types::DocumentationType::WindowsAPI,
+                        s if s.contains("cppreference") || s.contains("GNU") => crate::types::DocumentationType::StandardLibrary,
+                        s if s.contains("Linux") || s.contains("Ubuntu") => crate::types::DocumentationType::LinuxAPI,
+                        _ => crate::types::DocumentationType::Manual,
+                    };
+                    
+                    let quality_score = calculate_content_quality(&content, function_name, source_name);
+                    
+                    let doc = crate::types::FunctionDocumentation::new(
+                        function_name.to_string(),
+                        determine_platform(function_name, source_name),
+                        description,
+                        doc_type,
+                    )
+                    .with_header(header)
+                    .with_source_url(url.clone())
+                    .with_quality_score(quality_score);
+                    
+                    return Some(doc);
+                }
+            },
+            Ok(_) => {
+                log::debug!("Failed to fetch from URL (non-success status): {}", url);
+                // Cache the failure
+                {
+                    let mut cache = get_url_cache().lock().unwrap();
+                    cache.insert(url.clone(), None);
+                }
+            },
+            Err(e) => {
+                log::debug!("Error fetching URL {}: {}", url, e);
+                // Cache the failure
+                {
+                    let mut cache = get_url_cache().lock().unwrap();
+                    cache.insert(url.clone(), None);
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+// Validate that the content actually contains documentation
+fn is_valid_documentation_content(content: &str, function_name: &str) -> bool {
+    let content_lower = content.to_lowercase();
+    let function_lower = function_name.to_lowercase();
+    
+    // Content must be substantial
+    if content.len() < 200 {
+        return false;
+    }
+    
+    // Must not be error pages
+    if content_lower.contains("404") || content_lower.contains("not found") 
+        || content_lower.contains("page not found") || content_lower.contains("error") {
+        return false;
+    }
+    
+    // Must contain the function name or be a relevant documentation page
+    if content_lower.contains(&function_lower) 
+        || content_lower.contains("function") 
+        || content_lower.contains("api")
+        || content_lower.contains("documentation") {
+        return true;
+    }
+    
+    false
+}
+
+// Calculate quality score based on content characteristics
+fn calculate_content_quality(content: &str, function_name: &str, source_name: &str) -> f64 {
+    let mut score: f64 = 0.0;
+    
+    // Base score by source reputation
+    score += match source_name {
+        s if s.contains("Microsoft") => 0.9,
+        s if s.contains("cppreference") => 0.8,
+        s if s.contains("ReactOS") => 0.7,
+        s if s.contains("NT Internals") => 0.6,
+        _ => 0.5,
+    };
+    
+    // Bonus for containing function name
+    if content.to_lowercase().contains(&function_name.to_lowercase()) {
+        score += 0.1;
+    }
+    
+    // Bonus for substantial content
+    if content.len() > 1000 {
+        score += 0.1;
+    }
+    
+    // Bonus for containing code examples
+    if content.contains("example") || content.contains("Example") {
+        score += 0.1;
+    }
+    
+    score.min(1.0)
+}
+
+// Select the best documentation result from multiple sources
+fn select_best_documentation_result(results: Vec<(String, crate::types::FunctionDocumentation)>) -> Option<crate::types::FunctionDocumentation> {
+    if results.is_empty() {
+        return None;
+    }
+    
+    // Sort by quality score and return the best
+    let mut sorted_results = results;
+    sorted_results.sort_by(|a, b| b.1.quality_score.partial_cmp(&a.1.quality_score).unwrap_or(std::cmp::Ordering::Equal));
+    
+    Some(sorted_results.into_iter().next().unwrap().1)
 }
 
 // Helper functions for documentation parsing
