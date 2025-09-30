@@ -20,6 +20,7 @@ pub struct ComponentDetailView {
     documentation_loading: bool,
     documentation_error: Option<String>,
     lookup_task: Option<std::thread::JoinHandle<anyhow::Result<Option<FunctionDocumentation>>>>,
+    lookup_task_component_id: Option<String>, // Track which component the task is for
     lookup_result: Option<anyhow::Result<Option<FunctionDocumentation>>>,
 }
 
@@ -36,6 +37,7 @@ impl ComponentDetailView {
             documentation_loading: false,
             documentation_error: None,
             lookup_task: None,
+            lookup_task_component_id: None,
             lookup_result: None,
         }
     }
@@ -63,6 +65,7 @@ impl ComponentDetailView {
         
         // Cancel any ongoing lookup task - note: we can't easily cancel std::thread, so we just drop it
         self.lookup_task = None;
+        self.lookup_task_component_id = None;
         self.lookup_result = None;
 
         if was_loading || had_task {
@@ -181,10 +184,15 @@ impl ComponentDetailView {
     }
 
     fn render_documentation_section(&mut self, ui: &mut Ui, db_conn: Option<&rusqlite::Connection>) {
+        let current_component_id = self.component.as_ref().map(|c| c.id.clone());
+        
         // Check if lookup task is completed
         if let Some(task) = &self.lookup_task {
             if task.is_finished() {
+                log::debug!("Documentation task completed, processing results");
                 let task = self.lookup_task.take().unwrap();
+                self.lookup_task_component_id = None; // Clear the component ID
+                
                 match task.join() {
                     Ok(Ok(Some(doc))) => {
                         log::info!("Documentation lookup completed successfully for: {}", doc.function_name);
@@ -219,7 +227,17 @@ impl ComponentDetailView {
                         self.documentation_error = Some("Documentation lookup task failed unexpectedly".to_string());
                     }
                 }
-                // Don't call request_repaint here - egui handles this automatically
+            } else {
+                // Task is still running - check if it's for the current component
+                if let (Some(current_id), Some(task_id)) = (&current_component_id, &self.lookup_task_component_id) {
+                    if current_id != task_id {
+                        log::info!("Component changed while task was running, cancelling old task");
+                        self.lookup_task = None;
+                        self.lookup_task_component_id = None;
+                        self.documentation_loading = false;
+                        self.documentation_error = None;
+                    }
+                }
             }
         }
 
@@ -237,18 +255,34 @@ impl ComponentDetailView {
         } else {
             // Automatically start lookup for function components (with proper guards)
             if let (Some(component), Some(conn)) = (&self.component, db_conn) {
-                // Only start lookup if no task is running, not loading, and no error state
-                if !self.documentation_loading && self.lookup_task.is_none() && self.documentation_error.is_none() {
+                // Check if we already have a task running for this specific component
+                let task_for_current_component = self.lookup_task_component_id.as_ref() == Some(&component.id);
+                
+                // Debug current state
+                log::debug!("Documentation state check for {}: loading={}, task_exists={}, error_exists={}, task_for_current={}", 
+                    component.name,
+                    self.documentation_loading, 
+                    self.lookup_task.is_some(),
+                    self.documentation_error.is_some(),
+                    task_for_current_component);
+                
+                // Only start lookup if:
+                // 1. No task is currently running, AND
+                // 2. We're not in a loading state, AND  
+                // 3. There's no error state, AND
+                // 4. Either no task component ID is set OR it's not for the current component
+                let should_start_lookup = !self.documentation_loading 
+                    && self.lookup_task.is_none() 
+                    && self.documentation_error.is_none() 
+                    && !task_for_current_component;
+                
+                if should_start_lookup {
                     let function_name = component.name.clone();
+                    let component_id = component.id.clone();
                     log::info!("Auto-starting documentation lookup for function: {}", function_name);
-                    self.start_documentation_lookup(&function_name, conn);
+                    self.start_documentation_lookup(&function_name, &component_id, conn);
                 } else {
-                    // This should not happen with the guards in place
-                    log::debug!("Documentation lookup conditions not met - loading: {}, task exists: {}, error exists: {}", 
-                        self.documentation_loading, 
-                        self.lookup_task.is_some(),
-                        self.documentation_error.is_some());
-                    self.render_no_component_selected(ui);
+                    log::debug!("Skipping lookup start - conditions not met");
                 }
             } else {
                 // Show fallback message if no component or connection
@@ -309,6 +343,7 @@ impl ComponentDetailView {
                         self.documentation_error = None;
                         self.documentation_loading = false;
                         self.lookup_task = None;
+                        self.lookup_task_component_id = None;
                     }
                 }
                 ui.add_space(20.0);
@@ -401,6 +436,7 @@ impl ComponentDetailView {
             // Cancel button
             if ui.button("Cancel").clicked() {
                 self.lookup_task = None;
+                self.lookup_task_component_id = None;
                 self.documentation_loading = false;
                 log::info!("Documentation lookup cancelled by user");
             }
@@ -585,14 +621,24 @@ impl ComponentDetailView {
         ui.add_space(8.0);
     }
 
-    fn start_documentation_lookup(&mut self, function_name: &str, _conn: &rusqlite::Connection) {
+    fn start_documentation_lookup(&mut self, function_name: &str, component_id: &str, _conn: &rusqlite::Connection) {
         // Safety guard: prevent multiple concurrent lookups
         if self.documentation_loading || self.lookup_task.is_some() {
             log::warn!("Documentation lookup already in progress for: {}, ignoring duplicate request", function_name);
             return;
         }
 
+        // Additional safety: check if we already have a task for this specific component
+        if let Some(existing_component_id) = &self.lookup_task_component_id {
+            if existing_component_id == component_id {
+                log::warn!("Documentation lookup already in progress for component: {}, ignoring duplicate request", component_id);
+                return;
+            }
+        }
+
+        log::info!("Starting documentation lookup for function: {} (component: {})", function_name, component_id);
         self.documentation_loading = true;
+        self.lookup_task_component_id = Some(component_id.to_string());
         
         // Clone necessary data for the async task
         let function_name_clone = function_name.to_string();
@@ -604,62 +650,193 @@ impl ComponentDetailView {
         
         log::info!("Creating async task for documentation lookup: {}", function_name);
         
-        // Create a background thread for the documentation lookup using simple HTTP client
+        // Create a background thread for the documentation lookup with controlled HTTP client
         let task = std::thread::spawn(move || {
             log::info!("Task started for function: {}", function_name_clone);
             
-            // Use a simple synchronous HTTP approach to avoid Tokio runtime issues
-            log::info!("Starting simple documentation lookup for: {}", function_name_clone);
+            // Use a synchronous HTTP client to avoid Tokio runtime resource issues
+            log::info!("Starting HTTP documentation lookup for: {}", function_name_clone);
             
-            // For now, create a simple mock documentation response to prevent infinite loops
-            // This will be replaced with proper HTTP requests later
-            std::thread::sleep(std::time::Duration::from_millis(500)); // Simulate network delay
+            // Try different documentation sources in order
+            let sources = [
+                ("Windows API", "https://learn.microsoft.com/en-us/windows/win32/api/"),
+                ("C Standard Library", "https://en.cppreference.com/w/c/"),
+                ("Linux Manual", "https://man7.org/linux/man-pages/"),
+            ];
             
-            // Check if this is a Windows API function
-            if function_name_clone.starts_with("Nt") || function_name_clone.starts_with("Zw") {
-                log::info!("Creating mock Windows API documentation for: {}", function_name_clone);
-                let doc = crate::types::FunctionDocumentation::new(
-                    function_name_clone.clone(),
-                    "windows".to_string(),
-                    format!("Windows NT system call: {}\n\nThis is a low-level Windows API function from the Native API (ntdll.dll). These functions are typically used by the Windows subsystem and are not intended for direct application use.", function_name_clone),
-                    crate::types::DocumentationType::WindowsAPI,
-                )
-                .with_header(format!("NTSTATUS {}(/* parameters not available */);", function_name_clone))
-                .with_source_url("https://learn.microsoft.com/en-us/windows/win32/api/".to_string())
-                .with_quality_score(0.7);
+            for (source_name, base_url) in &sources {
+                log::debug!("Trying documentation source: {}", source_name);
                 
-                Ok(Some(doc))
-            } else if ["strlen", "strcpy", "malloc", "free", "printf", "scanf"].contains(&function_name_clone.as_str()) {
-                log::info!("Creating mock C standard library documentation for: {}", function_name_clone);
-                let description = match function_name_clone.as_str() {
-                    "strlen" => "Calculates the length of a null-terminated string.",
-                    "strcpy" => "Copies a null-terminated string from source to destination.",
-                    "malloc" => "Allocates a block of memory on the heap.",
-                    "free" => "Deallocates memory previously allocated by malloc.",
-                    "printf" => "Formatted output function that prints to stdout.",
-                    "scanf" => "Formatted input function that reads from stdin.",
-                    _ => "Standard C library function.",
+                // Create URL patterns based on function name and source
+                let search_urls = match source_name {
+                    &"Windows API" if function_name_clone.starts_with("Nt") || function_name_clone.starts_with("Zw") => {
+                        vec![
+                            format!("{}ntdll/{}.html", base_url, function_name_clone.to_lowercase()),
+                            format!("{}winbase/{}.html", base_url, function_name_clone.to_lowercase()),
+                        ]
+                    },
+                    &"C Standard Library" if ["strlen", "strcpy", "malloc", "free", "printf", "scanf", "memcpy", "strncpy"].contains(&function_name_clone.as_str()) => {
+                        vec![
+                            format!("{}string/{}", base_url, function_name_clone),
+                            format!("{}memory/{}", base_url, function_name_clone),
+                            format!("{}io/{}", base_url, function_name_clone),
+                        ]
+                    },
+                    &"Linux Manual" => {
+                        vec![
+                            format!("{}man2/{}.2.html", base_url, function_name_clone),
+                            format!("{}man3/{}.3.html", base_url, function_name_clone),
+                        ]
+                    },
+                    _ => vec![], // Skip this source for this function
                 };
                 
-                let doc = crate::types::FunctionDocumentation::new(
-                    function_name_clone.clone(),
-                    "c".to_string(),
-                    description.to_string(),
-                    crate::types::DocumentationType::StandardLibrary,
-                )
-                .with_header(format!("/* {} function prototype */", function_name_clone))
-                .with_source_url("https://en.cppreference.com/w/c/".to_string())
-                .with_quality_score(0.9);
-                
-                Ok(Some(doc))
-            } else {
-                log::info!("No mock documentation available for: {}", function_name_clone);
-                Ok(None)
+                for url in search_urls {
+                    log::debug!("Attempting to fetch: {}", url);
+                    
+                    // Try to fetch the URL with a simple HTTP client
+                    match std::process::Command::new("curl")
+                        .arg("-s")
+                        .arg("--max-time")
+                        .arg("5")
+                        .arg(&url)
+                        .output()
+                    {
+                        Ok(output) if output.status.success() => {
+                            let content = String::from_utf8_lossy(&output.stdout);
+                            if content.len() > 100 && !content.contains("404") && !content.contains("Not Found") {
+                                log::info!("Successfully fetched documentation from: {}", url);
+                                
+                                // Extract meaningful description from HTML content
+                                let description = extract_description_from_html(&content, &function_name_clone);
+                                
+                                let doc_type = match source_name {
+                                    &"Windows API" => crate::types::DocumentationType::WindowsAPI,
+                                    &"C Standard Library" => crate::types::DocumentationType::StandardLibrary,
+                                    &"Linux Manual" => crate::types::DocumentationType::LinuxAPI,
+                                    _ => crate::types::DocumentationType::Manual,
+                                };
+                                
+                                let doc = crate::types::FunctionDocumentation::new(
+                                    function_name_clone.clone(),
+                                    determine_platform(&function_name_clone, source_name),
+                                    description,
+                                    doc_type,
+                                )
+                                .with_header(extract_function_header(&content, &function_name_clone))
+                                .with_source_url(url)
+                                .with_quality_score(0.8);
+                                
+                                return Ok(Some(doc));
+                            }
+                        },
+                        Ok(_) => {
+                            log::debug!("Failed to fetch from URL (non-success status): {}", url);
+                        },
+                        Err(e) => {
+                            log::debug!("Error fetching URL {}: {}", url, e);
+                        }
+                    }
+                }
             }
+            
+            log::info!("No documentation found for function: {}", function_name_clone);
+            Ok(None)
         });
         
         self.lookup_task = Some(task);
         log::info!("Documentation lookup task started for: {}", function_name);
+    }
+}
+
+// Helper functions for documentation parsing
+fn extract_description_from_html(content: &str, function_name: &str) -> String {
+    // Simple HTML parsing to extract meaningful content
+    // Look for common patterns in documentation sites
+    
+    // Remove HTML tags for a basic text extraction
+    let text_content = content
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<p>", "\n")
+        .replace("</p>", "\n");
+    
+    // Try to find description patterns
+    if let Some(start) = text_content.find("Description") {
+        if let Some(section) = text_content.get(start..start.saturating_add(1000)) {
+            let lines: Vec<&str> = section.lines().skip(1).take(10).collect();
+            let description = lines.join(" ").trim().to_string();
+            if description.len() > 20 {
+                return description;
+            }
+        }
+    }
+    
+    // Fallback: look for any text mentioning the function name
+    for line in text_content.lines().take(50) {
+        if line.contains(function_name) && line.len() > 30 && line.len() < 500 {
+            let clean_line = line.trim().to_string();
+            if !clean_line.is_empty() && !clean_line.starts_with('<') {
+                return clean_line;
+            }
+        }
+    }
+    
+    // Final fallback: generic description based on function name
+    if function_name.starts_with("Nt") || function_name.starts_with("Zw") {
+        format!("Windows NT system call: {}. This is a low-level function from the Native API (ntdll.dll) used by the Windows subsystem.", function_name)
+    } else if ["strlen", "strcpy", "malloc", "free"].contains(&function_name) {
+        format!("Standard C library function: {}. Part of the C runtime library.", function_name)
+    } else {
+        format!("System function: {}. Documentation was found but content extraction needs refinement.", function_name)
+    }
+}
+
+fn extract_function_header(content: &str, function_name: &str) -> String {
+    // Look for function prototypes in common formats
+    let patterns = [
+        format!("NTSTATUS {}(", function_name),
+        format!("{}(", function_name),
+        format!("int {}(", function_name),
+        format!("void {}(", function_name),
+        format!("size_t {}(", function_name),
+    ];
+    
+    for line in content.lines() {
+        for pattern in &patterns {
+            if line.contains(pattern) {
+                // Extract the function signature
+                if let Some(start) = line.find(pattern) {
+                    if let Some(end) = line[start..].find(';') {
+                        return line[start..start + end + 1].trim().to_string();
+                    } else if let Some(end) = line[start..].find(')') {
+                        return format!("{});", &line[start..start + end + 1].trim());
+                    }
+                }
+            }
+        }
+    }
+    
+    // Fallback: create a generic prototype
+    if function_name.starts_with("Nt") || function_name.starts_with("Zw") {
+        format!("NTSTATUS {}(/* parameters not documented */);", function_name)
+    } else {
+        format!("/* {} function prototype not extracted */", function_name)
+    }
+}
+
+fn determine_platform(function_name: &str, source_name: &str) -> String {
+    match source_name {
+        "Windows API" => "windows".to_string(),
+        "Linux Manual" => "linux".to_string(),
+        "C Standard Library" => "c".to_string(),
+        _ => {
+            if function_name.starts_with("Nt") || function_name.starts_with("Zw") {
+                "windows".to_string()
+            } else {
+                "generic".to_string()
+            }
+        }
     }
 }
 
